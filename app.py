@@ -23,7 +23,8 @@ except ImportError:
 # Now import chromadb and other libraries
 import chromadb
 from langchain_community.llms import Together
-from langchain_together.embeddings import TogetherEmbeddings
+# Correct import path for TogetherEmbeddings
+from langchain_together.embeddings import TogetherEmbeddings 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -63,27 +64,22 @@ LANGUAGE_DICT = {
 @st.cache_resource
 def initialize_dependencies():
     """
-    Initializes and returns the ChromaDB client and SentenceTransformer model.
-    Using @st.cache_resource ensures this runs only once.
+    Initializes and returns the ChromaDB client.
     """
     try:
         db_path = tempfile.mkdtemp()
         db_client = chromadb.PersistentClient(path=db_path)
-        # Using TogetherEmbeddings for consistency with the LLM
-        embeddings_model = TogetherEmbeddings(
-            together_api_key=TOGETHER_API_KEY,
-            model="togethercomputer/m2-bert-80M-8k-retrieval"
-        )
-        return db_client, embeddings_model
+        return db_client
     except Exception as e:
         st.error(f"An error occurred during dependency initialization: {e}.")
         st.stop()
-        
+
 def get_collection():
-    """Retrieves or creates the ChromaDB collection."""
+    """Retrieves or creates the ChromaDB collection with the correct embedding function."""
+    embedding_function_name = "togethercomputer/m2-bert-80M-8k-retrieval"
     return st.session_state.db_client.get_or_create_collection(
         name=COLLECTION_NAME,
-        embedding_function=st.session_state.embeddings_model
+        embedding_function=embedding_function_name
     )
 
 def clear_chroma_data():
@@ -115,7 +111,6 @@ def process_and_store_documents(documents):
     """
     collection = get_collection()
     
-    # We don't need to generate embeddings manually now, as the collection handles it.
     document_ids = [str(uuid.uuid4()) for _ in documents]
     
     collection.add(
@@ -140,7 +135,6 @@ def retrieve_from_documents(query: str) -> List[str]:
     if collection.count() == 0:
         return ["No documents found in the database. Please upload a file first."]
     
-    # The collection handles embedding the query now
     results = collection.query(
         query_texts=[query],
         n_results=5
@@ -159,16 +153,12 @@ def setup_agentic_rag():
         max_tokens=2048
     )
     
-    # Define the tools the agent can use
     tools = [retrieve_from_documents]
     
-    # Get the prompt from the LangChain hub. This is a good starting point.
     prompt = hub.pull("hwchase17/react")
     
-    # Create the agent
     agent = create_tool_calling_agent(llm, tools, prompt)
     
-    # Create the agent executor
     agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
     
     return agent_executor
@@ -180,8 +170,6 @@ def run_agentic_pipeline(query, selected_language):
     if 'agent_executor' not in st.session_state:
         st.session_state.agent_executor = setup_agentic_rag()
     
-    # We can pass the selected language to the agent as part of the prompt
-    # to guide its response.
     final_prompt = f"The user asks: '{query}'. Provide the response in {selected_language}. If you can't find an answer from the provided documents, state that you cannot answer."
     
     try:
@@ -199,8 +187,14 @@ def display_chat_messages():
 def handle_user_input():
     """Handles new user input, runs the RAG pipeline, and updates chat history."""
     if prompt := st.chat_input("Ask about your document..."):
-        if not st.session_state.db_client.get_or_create_collection(name=COLLECTION_NAME).count():
-            st.error("Please process a document first by uploading a file or entering a URL.")
+        # Check if there are any documents in the collection
+        try:
+            collection = get_collection()
+            if collection.count() == 0:
+                st.error("Please process a document first by uploading a file or entering a URL.")
+                return
+        except Exception as e:
+            st.error(f"Error checking document count: {e}")
             return
 
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -254,8 +248,8 @@ def main_ui():
     st.markdown("---")
     
     # Initialize dependencies outside of the main UI block to prevent re-initialization
-    if 'db_client' not in st.session_state or 'embeddings_model' not in st.session_state:
-        st.session_state.db_client, st.session_state.embeddings_model = initialize_dependencies()
+    if 'db_client' not in st.session_state:
+        st.session_state.db_client = initialize_dependencies()
 
     # Document upload/processing section
     with st.container():
