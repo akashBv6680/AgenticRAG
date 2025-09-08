@@ -4,12 +4,12 @@ chromadb==0.4.24
 sentence-transformers==2.7.0
 numpy==1.26.4
 requests==2.32.3
-langchain-text-splitters==0.2.2
+langchain-text-splitters
 gitpython==3.1.43
 torch
 transformers
-langchain==0.1.20
-langchain-core==0.2.10
-langchain-community==0.0.38
+langchain
+langchain-core
+langchain-community
 langchainhub
 rich==13.7.1
