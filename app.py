@@ -37,7 +37,7 @@ from sentence_transformers import SentenceTransformer
 
 # --- Constants and Configuration ---
 COLLECTION_NAME = "agentic_rag_documents"
-TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "your_together_api_key_here")
+TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "tgp_v1_ecSsk1__FlO2mB_gAaaP2i-Affa6Dv8OCVngkWzBJUY")
 TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions"
 
 
