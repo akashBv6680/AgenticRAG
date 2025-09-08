@@ -23,7 +23,6 @@ except ImportError:
 # Now import chromadb and other libraries
 import chromadb
 from langchain_community.llms import Together
-# Correct import path for TogetherEmbeddings
 from langchain_together.embeddings import TogetherEmbeddings 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.chains import create_retrieval_chain
@@ -64,22 +63,26 @@ LANGUAGE_DICT = {
 @st.cache_resource
 def initialize_dependencies():
     """
-    Initializes and returns the ChromaDB client.
+    Initializes and returns the ChromaDB client and embeddings model.
+    Using @st.cache_resource ensures this runs only once.
     """
     try:
         db_path = tempfile.mkdtemp()
         db_client = chromadb.PersistentClient(path=db_path)
-        return db_client
+        embeddings_model = TogetherEmbeddings(
+            together_api_key=TOGETHER_API_KEY,
+            model="togethercomputer/m2-bert-80M-8k-retrieval"
+        )
+        return db_client, embeddings_model
     except Exception as e:
         st.error(f"An error occurred during dependency initialization: {e}.")
         st.stop()
-
+        
 def get_collection():
-    """Retrieves or creates the ChromaDB collection with the correct embedding function."""
-    embedding_function_name = "togethercomputer/m2-bert-80M-8k-retrieval"
+    """Retrieves or creates the ChromaDB collection."""
     return st.session_state.db_client.get_or_create_collection(
         name=COLLECTION_NAME,
-        embedding_function=embedding_function_name
+        embedding_function=st.session_state.embeddings_model
     )
 
 def clear_chroma_data():
@@ -187,7 +190,6 @@ def display_chat_messages():
 def handle_user_input():
     """Handles new user input, runs the RAG pipeline, and updates chat history."""
     if prompt := st.chat_input("Ask about your document..."):
-        # Check if there are any documents in the collection
         try:
             collection = get_collection()
             if collection.count() == 0:
@@ -248,8 +250,8 @@ def main_ui():
     st.markdown("---")
     
     # Initialize dependencies outside of the main UI block to prevent re-initialization
-    if 'db_client' not in st.session_state:
-        st.session_state.db_client = initialize_dependencies()
+    if 'db_client' not in st.session_state or 'embeddings_model' not in st.session_state:
+        st.session_state.db_client, st.session_state.embeddings_model = initialize_dependencies()
 
     # Document upload/processing section
     with st.container():
