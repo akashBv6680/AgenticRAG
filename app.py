@@ -31,7 +31,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage
 from langchain import hub
-from langchain_community.llms import Together
+from langchain_together import Together
 from sentence_transformers import SentenceTransformer
 
 
