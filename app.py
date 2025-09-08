@@ -31,7 +31,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage
 from langchain import hub
-from langchain_together import Together
+from langchain_community.llms import Together
 from sentence_transformers import SentenceTransformer
 
 
@@ -165,7 +165,7 @@ def handle_user_input():
             with st.spinner("Thinking..."):
                 agent_executor = create_agent()
                 try:
-                    response = agent_executor.invoke({"input": prompt})
+                    response = agent_executor.invoke({"input": prompt, "chat_history": st.session_state.messages})
                     final_response = response.get('output', 'An error occurred.')
                 except Exception as e:
                     final_response = f"An error occurred: {e}"
