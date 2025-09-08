@@ -37,7 +37,6 @@ from sentence_transformers import SentenceTransformer
 
 # --- Constants and Configuration ---
 COLLECTION_NAME = "agentic_rag_documents"
-# TOGETHER_API_KEY should be set in Streamlit Secrets
 TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "your_together_api_key_here")
 TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions"
 
@@ -62,9 +61,10 @@ def initialize_dependencies():
     Using @st.cache_resource ensures this runs only once.
     """
     try:
+        # We no longer need to pass an embedding function to ChromaDB's client
         db_path = tempfile.mkdtemp()
         db_client = chromadb.PersistentClient(path=db_path)
-        # Use SentenceTransformer for embedding, as it's more lightweight
+        # We will use the sentence-transformer model directly
         model = SentenceTransformer("all-MiniLM-L6-v2", device='cpu')
         return db_client, model
     except Exception as e:
@@ -77,6 +77,7 @@ if 'db_client' not in st.session_state or 'model' not in st.session_state:
 
 def get_collection():
     """Retrieves or creates the ChromaDB collection."""
+    # We create the collection without an embedding function to avoid the conflict
     return st.session_state.db_client.get_or_create_collection(
         name=COLLECTION_NAME
     )
@@ -87,6 +88,7 @@ def retrieve_documents(query: str) -> str:
     try:
         collection = get_collection()
         model = st.session_state.model
+        # Manually embed the query to get the embedding vector
         query_embedding = model.encode(query).tolist()
         results = collection.query(
             query_embeddings=query_embedding,
@@ -108,7 +110,6 @@ def create_agent():
     agent = create_tool_calling_agent(together_llm, tools, prompt_template)
     return AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-
 def clear_chroma_data():
     """Clears all data from the ChromaDB collection."""
     try:
@@ -116,7 +117,6 @@ def clear_chroma_data():
             st.session_state.db_client.delete_collection(name=COLLECTION_NAME)
     except Exception as e:
         st.error(f"Error clearing collection: {e}")
-
 
 def split_documents(text_data, chunk_size=500, chunk_overlap=100) -> List[str]:
     """Splits a single string of text into chunks."""
@@ -128,7 +128,6 @@ def split_documents(text_data, chunk_size=500, chunk_overlap=100) -> List[str]:
     )
     return splitter.split_text(text_data)
 
-
 def process_and_store_documents(documents: List[str]):
     """
     Processes a list of text documents, generates embeddings, and
@@ -137,6 +136,7 @@ def process_and_store_documents(documents: List[str]):
     collection = get_collection()
     model = st.session_state.model
 
+    # Manually generate embeddings and then add them to the collection
     embeddings = model.encode(documents).tolist()
     document_ids = [str(uuid.uuid4()) for _ in documents]
     
@@ -146,7 +146,6 @@ def process_and_store_documents(documents: List[str]):
         ids=document_ids
     )
     st.toast("Documents processed and stored successfully!", icon="✅")
-
 
 def is_valid_github_raw_url(url: str) -> bool:
     """Checks if a URL is a valid GitHub raw file URL."""
@@ -178,7 +177,6 @@ def handle_user_input():
                 st.markdown(final_response)
 
         st.session_state.messages.append({"role": "assistant", "content": final_response})
-
 
 # --- Main UI ---
 st.title("Agentic RAG Chat Flow")
