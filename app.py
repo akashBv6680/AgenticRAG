@@ -61,10 +61,8 @@ def initialize_dependencies():
     Using @st.cache_resource ensures this runs only once.
     """
     try:
-        # We no longer need to pass an embedding function to ChromaDB's client
         db_path = tempfile.mkdtemp()
         db_client = chromadb.PersistentClient(path=db_path)
-        # We will use the sentence-transformer model directly
         model = SentenceTransformer("all-MiniLM-L6-v2", device='cpu')
         return db_client, model
     except Exception as e:
@@ -77,7 +75,6 @@ if 'db_client' not in st.session_state or 'model' not in st.session_state:
 
 def get_collection():
     """Retrieves or creates the ChromaDB collection."""
-    # We create the collection without an embedding function to avoid the conflict
     return st.session_state.db_client.get_or_create_collection(
         name=COLLECTION_NAME
     )
@@ -88,7 +85,6 @@ def retrieve_documents(query: str) -> str:
     try:
         collection = get_collection()
         model = st.session_state.model
-        # Manually embed the query to get the embedding vector
         query_embedding = model.encode(query).tolist()
         results = collection.query(
             query_embeddings=query_embedding,
@@ -136,7 +132,6 @@ def process_and_store_documents(documents: List[str]):
     collection = get_collection()
     model = st.session_state.model
 
-    # Manually generate embeddings and then add them to the collection
     embeddings = model.encode(documents).tolist()
     document_ids = [str(uuid.uuid4()) for _ in documents]
     
