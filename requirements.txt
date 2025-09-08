@@ -10,6 +10,6 @@ torch
 transformers
 langchain
 langchain-core
-langchain-community
+langchain-together
 langchainhub
 rich==13.7.1
