@@ -1,6 +1,6 @@
 streamlit
 pysqlite3-binary
-chromadb
+chromadb==0.4.24
 langchain
 langchain-community
 langchain_text_splitters
