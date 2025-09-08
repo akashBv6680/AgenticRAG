@@ -27,7 +27,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.agents import create_react_agent, AgentExecutor
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage
 from langchain import hub
@@ -103,7 +103,6 @@ def create_agent():
         together_api_key=TOGETHER_API_KEY,
         model="mistralai/Mistral-7B-Instruct-v0.2"
     )
-    # Switch to create_react_agent
     agent = create_react_agent(together_llm, tools, prompt_template)
     return AgentExecutor(agent=agent, tools=tools, verbose=True)
 
@@ -173,7 +172,6 @@ def handle_user_input():
                 st.markdown(final_response)
 
         st.session_state.messages.append({"role": "assistant", "content": final_response})
-
 
 # --- Main UI ---
 st.title("Agentic RAG Chat Flow")
