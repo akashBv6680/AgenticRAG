@@ -37,6 +37,7 @@ from sentence_transformers import SentenceTransformer
 
 # --- Constants and Configuration ---
 COLLECTION_NAME = "agentic_rag_documents"
+# TOGETHER_API_KEY should be set in Streamlit Secrets
 TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "your_together_api_key_here")
 TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions"
 
@@ -95,6 +96,7 @@ def retrieve_documents(query: str) -> str:
     except Exception as e:
         return f"An error occurred during document retrieval: {e}"
 
+
 def create_agent():
     """Creates and returns a LangChain agent executor."""
     prompt_template = hub.pull("hwchase17/react-chat")
@@ -106,6 +108,7 @@ def create_agent():
     agent = create_tool_calling_agent(together_llm, tools, prompt_template)
     return AgentExecutor(agent=agent, tools=tools, verbose=True)
 
+
 def clear_chroma_data():
     """Clears all data from the ChromaDB collection."""
     try:
@@ -113,6 +116,7 @@ def clear_chroma_data():
             st.session_state.db_client.delete_collection(name=COLLECTION_NAME)
     except Exception as e:
         st.error(f"Error clearing collection: {e}")
+
 
 def split_documents(text_data, chunk_size=500, chunk_overlap=100) -> List[str]:
     """Splits a single string of text into chunks."""
@@ -123,6 +127,7 @@ def split_documents(text_data, chunk_size=500, chunk_overlap=100) -> List[str]:
         is_separator_regex=False,
     )
     return splitter.split_text(text_data)
+
 
 def process_and_store_documents(documents: List[str]):
     """
@@ -141,6 +146,7 @@ def process_and_store_documents(documents: List[str]):
         ids=document_ids
     )
     st.toast("Documents processed and stored successfully!", icon="✅")
+
 
 def is_valid_github_raw_url(url: str) -> bool:
     """Checks if a URL is a valid GitHub raw file URL."""
@@ -172,6 +178,7 @@ def handle_user_input():
                 st.markdown(final_response)
 
         st.session_state.messages.append({"role": "assistant", "content": final_response})
+
 
 # --- Main UI ---
 st.title("Agentic RAG Chat Flow")
