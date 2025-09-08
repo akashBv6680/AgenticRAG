@@ -13,3 +13,4 @@ langchain-core
 langchain-community
 langchainhub
 rich==13.7.1
+duckduckgo-search
