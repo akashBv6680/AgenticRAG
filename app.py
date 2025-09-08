@@ -23,7 +23,7 @@ except ImportError:
 # Now import chromadb and other libraries
 import chromadb
 from langchain_community.llms import Together
-from langchain_community.embeddings import TogetherEmbeddings
+from langchain_together.embeddings import TogetherEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
