@@ -33,6 +33,7 @@ from langchain_core.messages import BaseMessage
 from langchain import hub
 from langchain_community.llms import Together
 from sentence_transformers import SentenceTransformer
+from langchain_community.tools import DuckDuckGoSearchRun
 
 
 # --- Constants and Configuration ---
@@ -81,7 +82,8 @@ def get_collection():
 
 @tool
 def retrieve_documents(query: str) -> str:
-    """Searches for and returns documents relevant to the query from the vector database."""
+    """Searches for and returns documents relevant to the query from the vector database.
+    This tool should be used when the user asks a question about the uploaded documents."""
     try:
         collection = get_collection()
         model = st.session_state.model
@@ -94,11 +96,42 @@ def retrieve_documents(query: str) -> str:
     except Exception as e:
         return f"An error occurred during document retrieval: {e}"
 
+@tool
+def calculator(expression: str) -> str:
+    """Calculates the result of a mathematical expression string.
+    
+    Args:
+        expression: The mathematical expression to evaluate (e.g., "2 * 3 + 5").
+        This tool is useful for simple calculations."""
+    try:
+        # Use eval() with caution as it can be a security risk in production environments
+        return str(eval(expression))
+    except Exception as e:
+        return f"Error: Could not evaluate expression. {e}"
+
+@tool
+def duckduckgo_search(query: str) -> str:
+    """Searches the web for the given query using DuckDuckGo.
+    
+    Args:
+        query: The search query. This tool is useful for current events or general knowledge
+        questions not covered by the documents.
+    """
+    search = DuckDuckGoSearchRun()
+    return search.run(query)
 
 def create_agent():
     """Creates and returns a LangChain agent executor."""
     prompt_template = hub.pull("hwchase17/react-chat")
-    tools = [retrieve_documents]
+    
+    # You can customize the tools the agent has access to here.
+    # The agent will decide which tool to use based on the user's query.
+    tools = [
+        retrieve_documents, # For RAG functionality on uploaded docs
+        calculator,         # For mathematical queries
+        duckduckgo_search   # For general web search
+    ]
+    
     together_llm = Together(
         together_api_key=TOGETHER_API_KEY,
         model="mistralai/Mistral-7B-Instruct-v0.2"
