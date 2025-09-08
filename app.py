@@ -291,4 +291,10 @@ def main_ui():
                     except requests.exceptions.RequestException as e:
                         st.error(f"Error fetching URL: {e}")
                     except Exception as e:
-                        st.error(f"An unexpected
+                        st.error(f"An unexpected error occurred: {e}")
+    
+    display_chat_messages()
+    handle_user_input()
+
+if __name__ == "__main__":
+    main_ui()
