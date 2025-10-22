@@ -11,7 +11,8 @@ transformers
 langchain
 langchain-core
 langchain-community
-langchainhub
+langchain-tavily
+tavily-python
 rich==13.7.1
 duckduckgo-search
-openai
+together-python 
