@@ -13,6 +13,6 @@ langchain-core
 langchain-community
 langchain-tavily
 tavily-python
-rich==13.7.1
+rich>=10.14.0,<14
 duckduckgo-search
-together-python 
+together-python
