@@ -51,6 +51,15 @@ def get_collection():
 
 @tool
 def retrieve_documents(query: str) -> str:
+    """
+    Searches the ChromaDB vector database for documents relevant to the query.
+    
+    Args:
+        query (str): The search question or keywords.
+        
+    Returns:
+        str: Concatenated matching documents or an error message.
+    """
     try:
         collection = get_collection()
         model = st.session_state.model
@@ -62,6 +71,15 @@ def retrieve_documents(query: str) -> str:
 
 @tool
 def calculator(expression: str) -> str:
+    """
+    Evaluates a mathematical expression string safely.
+    
+    Args:
+        expression (str): A mathematical expression (e.g., "2 + 2 * 3").
+        
+    Returns:
+        str: The calculation result or error message.
+    """
     try:
         return str(eval(expression))
     except Exception as e:
@@ -69,6 +87,15 @@ def calculator(expression: str) -> str:
 
 @tool
 def duckduckgo_search(query: str) -> str:
+    """
+    Performs a DuckDuckGo web search for the given query.
+    
+    Args:
+        query (str): Query string to search for.
+        
+    Returns:
+        str: Search results as a string.
+    """
     search = DuckDuckGoSearchRun()
     return search.run(query)
 
@@ -80,7 +107,6 @@ def create_agent():
         st.error("TAVILY_API_KEY not found in secrets.")
         st.stop()
 
-    # Create TavilySearch tool instance
     tavily_search_tool = TavilySearch(max_results=5)
 
     tools = [
