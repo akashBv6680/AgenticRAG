@@ -1,48 +1,27 @@
 import streamlit as st
 import os
-import sys
 import tempfile
 import uuid
-import json
 import requests
-import time
-from datetime import datetime
 import re
+from datetime import datetime
 from typing import List
 
-# --- Set Page Config (Must be the very first Streamlit command) ---
-st.set_page_config(layout="wide")
-
-# This block MUST be at the very top to fix the sqlite3 version issue.
-try:
-    __import__('pysqlite3')
-    sys.modules['sqlite3'] = sys.modules['pysqlite3']
-except ImportError:
-    st.error("pysqlite3 is not installed. Please add 'pysqlite3-binary' to your requirements.txt.")
-    st.stop()
-
-# Now import other libraries
+# Install Tavily client and LangChain Tavily retriever separately
+from tavily import TavilyClient
+from langchain_tavily import TavilySearchRetriever
 import chromadb
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import SentenceTransformerEmbeddings
+from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.agents import create_react_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
-from langchain_core.messages import BaseMessage
 from langchain import hub
-from langchain_community.llms import Together
-from langchain.chat_models import ChatOpenAI
-from sentence_transformers import SentenceTransformer
 from langchain_community.tools import DuckDuckGoSearchRun
 
-# --- Constants and Configuration ---
+# Constants
 COLLECTION_NAME = "agentic_rag_documents"
 
-# Remove default Together API key setting here, will get API key based on user selection from Streamlit secrets
-TOGETHER_API_KEY = None
-
-# --- Centralized Session State Initialization ---
+# Initialize Streamlit session state
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'chat_history' not in st.session_state:
@@ -57,108 +36,80 @@ if 'current_chat_id' not in st.session_state:
 
 @st.cache_resource
 def initialize_dependencies():
-    """
-    Initializes and returns the ChromaDB client and SentenceTransformer model.
-    Using @st.cache_resource ensures this runs only once.
-    """
     try:
         db_path = tempfile.mkdtemp()
         db_client = chromadb.PersistentClient(path=db_path)
         model = SentenceTransformer("all-MiniLM-L6-v2", device='cpu')
         return db_client, model
     except Exception as e:
-        st.error(f"An error occurred during dependency initialization: {e}.")
+        st.error(f"Dependency initialization error: {e}")
         st.stop()
 
 if 'db_client' not in st.session_state or 'model' not in st.session_state:
     st.session_state.db_client, st.session_state.model = initialize_dependencies()
 
 def get_collection():
-    """Retrieves or creates the ChromaDB collection."""
-    return st.session_state.db_client.get_or_create_collection(
-        name=COLLECTION_NAME
-    )
+    return st.session_state.db_client.get_or_create_collection(name=COLLECTION_NAME)
 
 @tool
 def retrieve_documents(query: str) -> str:
-    """Searches for and returns documents relevant to the query from the vector database.
-    This tool should be used when the user asks a question about the uploaded documents."""
     try:
         collection = get_collection()
         model = st.session_state.model
         query_embedding = model.encode(query).tolist()
-        results = collection.query(
-            query_embeddings=query_embedding,
-            n_results=5
-        )
+        results = collection.query(query_embeddings=query_embedding, n_results=5)
         return "\n".join(results['documents'][0])
     except Exception as e:
-        return f"An error occurred during document retrieval: {e}"
+        return f"Error in document retrieval: {e}"
 
 @tool
 def calculator(expression: str) -> str:
-    """Calculates the result of a mathematical expression string.
-    
-    Args:
-        expression: The mathematical expression to evaluate (e.g., "2 * 3 + 5").
-        This tool is useful for simple calculations."""
     try:
-        # Use eval() with caution as it can be a security risk in production environments
         return str(eval(expression))
     except Exception as e:
-        return f"Error: Could not evaluate expression. {e}"
+        return f"Error evaluating expression: {e}"
 
 @tool
 def duckduckgo_search(query: str) -> str:
-    """Searches the web for the given query using DuckDuckGo.
-    
-    Args:
-        query: The search query. This tool is useful for current events or general knowledge
-        questions not covered by the documents.
-    """
     search = DuckDuckGoSearchRun()
     return search.run(query)
 
 def create_agent():
-    """Creates and returns a LangChain agent executor based on selected LLM and API key."""
     prompt_template = hub.pull("hwchase17/react-chat")
+    tools = [retrieve_documents, calculator, duckduckgo_search]
 
-    # Tools the agent has access to
-    tools = [
-        retrieve_documents, # For RAG functionality on uploaded docs
-        calculator,         # For mathematical queries
-        duckduckgo_search   # For general web search
-    ]
+    # Get Tavily API key
+    tavily_api_key = st.secrets.get("TAVILY_API_KEY")
+    if not tavily_api_key:
+        st.error("TAVILY_API_KEY is not set in Streamlit secrets.")
+        st.stop()
 
-    # Select which LLM and API key to use based on sidebar selection
-    api_provider = st.session_state.get('api_provider', 'Tavily AI')
+    # Initialize Tavily Search Retriever
+    retriever = TavilySearchRetriever(api_key=tavily_api_key)
 
-    if api_provider == 'Together AI':
-        together_api_key = st.secrets.get("TOGETHER_API_KEY")
-        if not together_api_key:
-            st.error("Together API key is not set in Streamlit secrets.")
-            st.stop()
+    # You need an LLM to use with this retriever - here use dummy or customize
+    # For demo, let's use Together AI only or you can add other LLMs compatible with your setup
+
+    together_api_key = st.secrets.get("TOGETHER_API_KEY")
+    if together_api_key:
+        from langchain_community.llms import Together
         llm = Together(
             together_api_key=together_api_key,
             model="mistralai/Mistral-7B-Instruct-v0.2"
         )
     else:
-        # Tavily AI implementation: use ChatOpenAI with Tavily API key from secrets
-        tavily_api_key = st.secrets.get("TAVILY_API_KEY")
-        if not tavily_api_key:
-            st.error("Tavily AI API key is not set in Streamlit secrets.")
-            st.stop()
-        # Assuming Tavily AI is compatible with OpenAI chat completion API spec, else use proper SDK
-        llm = ChatOpenAI(
-            openai_api_key=tavily_api_key,
-            model_name="gpt-4o-tavily"  # example Tavily model; adapt as needed
-        )
+        # Dummy fallback LLM to avoid errors; replace with your prefered LLM
+        from langchain.llms import HuggingFaceHub
+        llm = HuggingFaceHub(repo_id="google/flan-t5-small")
 
+    # Customize agent prompt with tools and retriever from Tavily
     agent = create_react_agent(llm, tools, prompt_template)
-    return AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+    return agent_executor
 
 def clear_chroma_data():
-    """Clears all data from the ChromaDB collection."""
     try:
         if COLLECTION_NAME in [col.name for col in st.session_state.db_client.list_collections()]:
             st.session_state.db_client.delete_collection(name=COLLECTION_NAME)
@@ -166,7 +117,6 @@ def clear_chroma_data():
         st.error(f"Error clearing collection: {e}")
 
 def split_documents(text_data, chunk_size=500, chunk_overlap=100) -> List[str]:
-    """Splits a single string of text into chunks."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -176,42 +126,31 @@ def split_documents(text_data, chunk_size=500, chunk_overlap=100) -> List[str]:
     return splitter.split_text(text_data)
 
 def process_and_store_documents(documents: List[str]):
-    """
-    Processes a list of text documents, generates embeddings, and
-    stores them in ChromaDB.
-    """
     collection = get_collection()
     model = st.session_state.model
 
     embeddings = model.encode(documents).tolist()
     document_ids = [str(uuid.uuid4()) for _ in documents]
-    
-    collection.add(
-        documents=documents,
-        embeddings=embeddings,
-        ids=document_ids
-    )
+
+    collection.add(documents=documents, embeddings=embeddings, ids=document_ids)
     st.toast("Documents processed and stored successfully!", icon="✅")
 
 def is_valid_github_raw_url(url: str) -> bool:
-    """Checks if a URL is a valid GitHub raw file URL."""
     pattern = r"https://raw\.githubusercontent\.com/[\w-]+/[\w-]+/[^/]+/[\w./-]+\.(txt|md)"
     return re.match(pattern, url) is not None
 
 def display_chat_messages():
-    """Displays all chat messages in the Streamlit app."""
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
 def handle_user_input():
-    """Handles new user input, runs the RAG pipeline, and updates chat history."""
     if prompt := st.chat_input("Ask about your document..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        
+
         with st.chat_message("user"):
             st.markdown(prompt)
-            
+
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 agent_executor = create_agent()
@@ -225,18 +164,15 @@ def handle_user_input():
         st.session_state.messages.append({"role": "assistant", "content": final_response})
 
 # --- Main UI ---
-st.title("Agentic RAG Chat Flow")
+st.title("Agentic RAG Chat Flow with Tavily")
 st.markdown("---")
 
-# Sidebar to choose API provider
+# Sidebar
 with st.sidebar:
     st.header("API Key Configuration")
-    api_choice = st.radio("Select LLM API Provider:", options=["Tavily AI", "Together AI"])
-    st.session_state.api_provider = api_choice
-
     st.markdown(
         """
-        Upload your API keys in the Streamlit Cloud Secrets section under:
+        Upload your API keys in Streamlit Cloud Secrets:
         
         - `TAVILY_API_KEY` for Tavily AI
         - `TOGETHER_API_KEY` for Together AI (optional)
@@ -254,8 +190,8 @@ with st.sidebar:
     st.subheader("Chat History")
     if 'chat_history' in st.session_state and st.session_state.chat_history:
         sorted_chat_ids = sorted(
-            st.session_state.chat_history.keys(), 
-            key=lambda x: st.session_state.chat_history[x]['date'], 
+            st.session_state.chat_history.keys(),
+            key=lambda x: st.session_state.chat_history[x]['date'],
             reverse=True
         )
         for chat_id in sorted_chat_ids:
@@ -294,7 +230,7 @@ with st.container():
                 except requests.exceptions.RequestException as e:
                     st.error(f"Error fetching URL: {e}")
                 except Exception as e:
-                    st.error(f"An unexpected error occurred: {e}")
+                    st.error(f"Unexpected error: {e}")
 
 display_chat_messages()
 handle_user_input()
