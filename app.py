@@ -18,6 +18,9 @@ from langchain_core.tools import tool
 from langchain import hub
 from langchain_community.tools import DuckDuckGoSearchRun
 
+# Use the new huggingface client package
+from langchain_huggingface import HuggingFaceEndpoint
+
 COLLECTION_NAME = "agentic_rag_documents"
 
 if 'messages' not in st.session_state:
@@ -128,11 +131,9 @@ def create_agent():
         if not hf_token:
             st.error("HUGGINGFACEHUB_API_TOKEN not found in secrets.")
             st.stop()
-        from langchain.llms import HuggingFaceHub
-        llm = HuggingFaceHub(
-            repo_id="google/flan-t5-small",
-            huggingfacehub_api_token=hf_token,
-            task="text2text-generation"
+        llm = HuggingFaceEndpoint(
+            endpoint_url="https://api-inference.huggingface.co/models/google/flan-t5-small",
+            huggingfacehub_api_token=hf_token
         )
 
     agent = create_react_agent(llm, tools, prompt_template)
