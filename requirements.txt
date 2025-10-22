@@ -14,5 +14,4 @@ langchain-community
 langchain-tavily
 tavily-python
 rich>=10.14.0,<14
-duckduckgo-search
-together-python
+duckduckgo-search==8.1.1
