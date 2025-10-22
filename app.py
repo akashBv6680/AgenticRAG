@@ -32,15 +32,15 @@ from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage
 from langchain import hub
 from langchain_community.llms import Together
+from langchain.chat_models import ChatOpenAI
 from sentence_transformers import SentenceTransformer
 from langchain_community.tools import DuckDuckGoSearchRun
 
-
 # --- Constants and Configuration ---
 COLLECTION_NAME = "agentic_rag_documents"
-TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "tgp_v1_ecSsk1__FlO2mB_gAaaP2i-Affa6Dv8OCVngkWzBJUY")
-TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions"
 
+# Remove default Together API key setting here, will get API key based on user selection from Streamlit secrets
+TOGETHER_API_KEY = None
 
 # --- Centralized Session State Initialization ---
 if 'messages' not in st.session_state:
@@ -54,7 +54,7 @@ if 'current_chat_id' not in st.session_state:
         'title': "New Chat",
         'date': datetime.now()
     }
-    
+
 @st.cache_resource
 def initialize_dependencies():
     """
@@ -72,7 +72,6 @@ def initialize_dependencies():
 
 if 'db_client' not in st.session_state or 'model' not in st.session_state:
     st.session_state.db_client, st.session_state.model = initialize_dependencies()
-
 
 def get_collection():
     """Retrieves or creates the ChromaDB collection."""
@@ -121,22 +120,41 @@ def duckduckgo_search(query: str) -> str:
     return search.run(query)
 
 def create_agent():
-    """Creates and returns a LangChain agent executor."""
+    """Creates and returns a LangChain agent executor based on selected LLM and API key."""
     prompt_template = hub.pull("hwchase17/react-chat")
-    
-    # You can customize the tools the agent has access to here.
-    # The agent will decide which tool to use based on the user's query.
+
+    # Tools the agent has access to
     tools = [
         retrieve_documents, # For RAG functionality on uploaded docs
         calculator,         # For mathematical queries
         duckduckgo_search   # For general web search
     ]
-    
-    together_llm = Together(
-        together_api_key=TOGETHER_API_KEY,
-        model="mistralai/Mistral-7B-Instruct-v0.2"
-    )
-    agent = create_react_agent(together_llm, tools, prompt_template)
+
+    # Select which LLM and API key to use based on sidebar selection
+    api_provider = st.session_state.get('api_provider', 'Tavily AI')
+
+    if api_provider == 'Together AI':
+        together_api_key = st.secrets.get("TOGETHER_API_KEY")
+        if not together_api_key:
+            st.error("Together API key is not set in Streamlit secrets.")
+            st.stop()
+        llm = Together(
+            together_api_key=together_api_key,
+            model="mistralai/Mistral-7B-Instruct-v0.2"
+        )
+    else:
+        # Tavily AI implementation: use ChatOpenAI with Tavily API key from secrets
+        tavily_api_key = st.secrets.get("TAVILY_API_KEY")
+        if not tavily_api_key:
+            st.error("Tavily AI API key is not set in Streamlit secrets.")
+            st.stop()
+        # Assuming Tavily AI is compatible with OpenAI chat completion API spec, else use proper SDK
+        llm = ChatOpenAI(
+            openai_api_key=tavily_api_key,
+            model_name="gpt-4o-tavily"  # example Tavily model; adapt as needed
+        )
+
+    agent = create_react_agent(llm, tools, prompt_template)
     return AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 def clear_chroma_data():
@@ -210,6 +228,44 @@ def handle_user_input():
 st.title("Agentic RAG Chat Flow")
 st.markdown("---")
 
+# Sidebar to choose API provider
+with st.sidebar:
+    st.header("API Key Configuration")
+    api_choice = st.radio("Select LLM API Provider:", options=["Tavily AI", "Together AI"])
+    st.session_state.api_provider = api_choice
+
+    st.markdown(
+        """
+        Upload your API keys in the Streamlit Cloud Secrets section under:
+        
+        - `TAVILY_API_KEY` for Tavily AI
+        - `TOGETHER_API_KEY` for Together AI (optional)
+        """
+    )
+
+    st.header("Agentic RAG Chat Flow")
+    if st.button("New Chat"):
+        st.session_state.messages = []
+        clear_chroma_data()
+        st.session_state.chat_history = {}
+        st.session_state.current_chat_id = None
+        st.experimental_rerun()
+
+    st.subheader("Chat History")
+    if 'chat_history' in st.session_state and st.session_state.chat_history:
+        sorted_chat_ids = sorted(
+            st.session_state.chat_history.keys(), 
+            key=lambda x: st.session_state.chat_history[x]['date'], 
+            reverse=True
+        )
+        for chat_id in sorted_chat_ids:
+            chat_title = st.session_state.chat_history[chat_id]['title']
+            date_str = st.session_state.chat_history[chat_id]['date'].strftime("%b %d, %I:%M %p")
+            if st.button(f"**{chat_title}** - {date_str}", key=chat_id):
+                st.session_state.current_chat_id = chat_id
+                st.session_state.messages = st.session_state.chat_history[chat_id]['messages']
+                st.experimental_rerun()
+
 # Document upload/processing section
 with st.container():
     st.subheader("Add Context Documents")
@@ -239,31 +295,6 @@ with st.container():
                     st.error(f"Error fetching URL: {e}")
                 except Exception as e:
                     st.error(f"An unexpected error occurred: {e}")
-
-# Sidebar
-with st.sidebar:
-    st.header("Agentic RAG Chat Flow")
-    if st.button("New Chat"):
-        st.session_state.messages = []
-        clear_chroma_data()
-        st.session_state.chat_history = {}
-        st.session_state.current_chat_id = None
-        st.experimental_rerun()
-
-    st.subheader("Chat History")
-    if 'chat_history' in st.session_state and st.session_state.chat_history:
-        sorted_chat_ids = sorted(
-            st.session_state.chat_history.keys(), 
-            key=lambda x: st.session_state.chat_history[x]['date'], 
-            reverse=True
-        )
-        for chat_id in sorted_chat_ids:
-            chat_title = st.session_state.chat_history[chat_id]['title']
-            date_str = st.session_state.chat_history[chat_id]['date'].strftime("%b %d, %I:%M %p")
-            if st.button(f"**{chat_title}** - {date_str}", key=chat_id):
-                st.session_state.current_chat_id = chat_id
-                st.session_state.messages = st.session_state.chat_history[chat_id]['messages']
-                st.experimental_rerun()
 
 display_chat_messages()
 handle_user_input()
