@@ -129,7 +129,11 @@ def create_agent():
             st.error("HUGGINGFACEHUB_API_TOKEN not found in secrets.")
             st.stop()
         from langchain.llms import HuggingFaceHub
-        llm = HuggingFaceHub(repo_id="google/flan-t5-small", huggingfacehub_api_token=hf_token)
+        llm = HuggingFaceHub(
+            repo_id="google/flan-t5-small",
+            huggingfacehub_api_token=hf_token,
+            task="text2text-generation"
+        )
 
     agent = create_react_agent(llm, tools, prompt_template)
     return AgentExecutor(agent=agent, tools=tools, verbose=True)
