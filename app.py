@@ -7,9 +7,9 @@ import re
 from datetime import datetime
 from typing import List
 
-# Install Tavily client and LangChain Tavily retriever separately
 from tavily import TavilyClient
-from langchain_tavily import TavilySearchRetriever
+from langchain_tavily import TavilySearch
+
 import chromadb
 from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -18,10 +18,8 @@ from langchain_core.tools import tool
 from langchain import hub
 from langchain_community.tools import DuckDuckGoSearchRun
 
-# Constants
 COLLECTION_NAME = "agentic_rag_documents"
 
-# Initialize Streamlit session state
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'chat_history' not in st.session_state:
@@ -76,19 +74,21 @@ def duckduckgo_search(query: str) -> str:
 
 def create_agent():
     prompt_template = hub.pull("hwchase17/react-chat")
-    tools = [retrieve_documents, calculator, duckduckgo_search]
 
-    # Get Tavily API key
     tavily_api_key = st.secrets.get("TAVILY_API_KEY")
     if not tavily_api_key:
-        st.error("TAVILY_API_KEY is not set in Streamlit secrets.")
+        st.error("TAVILY_API_KEY not found in secrets.")
         st.stop()
 
-    # Initialize Tavily Search Retriever
-    retriever = TavilySearchRetriever(api_key=tavily_api_key)
+    # Create TavilySearch tool instance
+    tavily_search_tool = TavilySearch(max_results=5)
 
-    # You need an LLM to use with this retriever - here use dummy or customize
-    # For demo, let's use Together AI only or you can add other LLMs compatible with your setup
+    tools = [
+        retrieve_documents,
+        calculator,
+        duckduckgo_search,
+        tavily_search_tool
+    ]
 
     together_api_key = st.secrets.get("TOGETHER_API_KEY")
     if together_api_key:
@@ -98,16 +98,11 @@ def create_agent():
             model="mistralai/Mistral-7B-Instruct-v0.2"
         )
     else:
-        # Dummy fallback LLM to avoid errors; replace with your prefered LLM
         from langchain.llms import HuggingFaceHub
         llm = HuggingFaceHub(repo_id="google/flan-t5-small")
 
-    # Customize agent prompt with tools and retriever from Tavily
     agent = create_react_agent(llm, tools, prompt_template)
-
-    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-
-    return agent_executor
+    return AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 def clear_chroma_data():
     try:
