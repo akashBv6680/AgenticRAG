@@ -130,9 +130,14 @@ def create_agent():
         if not hf_token:
             st.error("HUGGINGFACEHUB_API_TOKEN not found in secrets.")
             st.stop()
-        # Update to new Hugging Face router endpoint
+
+        # Model selection widget in sidebar or default to flan-t5-base
+        hf_model_id = st.sidebar.text_input("Hugging Face model id", value="google/flan-t5-base")
+
+        endpoint_url = f"https://router.huggingface.co/hf-inference/{hf_model_id}"
+
         llm = HuggingFaceEndpoint(
-            endpoint_url="https://router.huggingface.co/hf-inference/google/flan-t5-small",
+            endpoint_url=endpoint_url,
             huggingfacehub_api_token=hf_token
         )
 
@@ -209,6 +214,8 @@ with st.sidebar:
         - `HUGGINGFACEHUB_API_TOKEN` for HuggingFaceHub LLM fallback
         """
     )
+    # Model id input for HF endpoint
+    st.text_input("Hugging Face model id", value="google/flan-t5-base", key="huggingface_model_id")
 
     st.header("Agentic RAG Chat Flow")
     if st.button("New Chat"):
@@ -232,36 +239,6 @@ with st.sidebar:
                 st.session_state.current_chat_id = chat_id
                 st.session_state.messages = st.session_state.chat_history[chat_id]['messages']
                 st.experimental_rerun()
-
-# Document upload/processing section
-with st.container():
-    st.subheader("Add Context Documents")
-    uploaded_files = st.file_uploader("Upload text files (.txt)", type="txt", accept_multiple_files=True)
-    github_url = st.text_input("Enter a GitHub raw `.txt` or `.md` URL:")
-
-    if uploaded_files:
-        if st.button("Process Files"):
-            with st.spinner("Processing files..."):
-                for uploaded_file in uploaded_files:
-                    file_contents = uploaded_file.read().decode("utf-8")
-                    documents = split_documents(file_contents)
-                    process_and_store_documents(documents)
-                st.success("All files processed and stored successfully! You can now ask questions about their content.")
-
-    if github_url and is_valid_github_raw_url(github_url):
-        if st.button("Process URL"):
-            with st.spinner("Fetching and processing file from URL..."):
-                try:
-                    response = requests.get(github_url)
-                    response.raise_for_status()
-                    file_contents = response.text
-                    documents = split_documents(file_contents)
-                    process_and_store_documents(documents)
-                    st.success("File from URL processed! You can now chat about its contents.")
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Error fetching URL: {e}")
-                except Exception as e:
-                    st.error(f"Unexpected error: {e}")
 
 display_chat_messages()
 handle_user_input()
