@@ -124,8 +124,12 @@ def create_agent():
             model="mistralai/Mistral-7B-Instruct-v0.2"
         )
     else:
+        hf_token = st.secrets.get("HUGGINGFACEHUB_API_TOKEN")
+        if not hf_token:
+            st.error("HUGGINGFACEHUB_API_TOKEN not found in secrets.")
+            st.stop()
         from langchain.llms import HuggingFaceHub
-        llm = HuggingFaceHub(repo_id="google/flan-t5-small")
+        llm = HuggingFaceHub(repo_id="google/flan-t5-small", huggingfacehub_api_token=hf_token)
 
     agent = create_react_agent(llm, tools, prompt_template)
     return AgentExecutor(agent=agent, tools=tools, verbose=True)
@@ -197,6 +201,7 @@ with st.sidebar:
         
         - `TAVILY_API_KEY` for Tavily AI
         - `TOGETHER_API_KEY` for Together AI (optional)
+        - `HUGGINGFACEHUB_API_TOKEN` for HuggingFaceHub LLM fallback
         """
     )
 
