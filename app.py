@@ -18,7 +18,6 @@ from langchain_core.tools import tool
 from langchain import hub
 from langchain_community.tools import DuckDuckGoSearchRun
 
-# Use the new huggingface client package
 from langchain_huggingface import HuggingFaceEndpoint
 
 COLLECTION_NAME = "agentic_rag_documents"
@@ -131,8 +130,9 @@ def create_agent():
         if not hf_token:
             st.error("HUGGINGFACEHUB_API_TOKEN not found in secrets.")
             st.stop()
+        # Update to new Hugging Face router endpoint
         llm = HuggingFaceEndpoint(
-            endpoint_url="https://api-inference.huggingface.co/models/google/flan-t5-small",
+            endpoint_url="https://router.huggingface.co/hf-inference/google/flan-t5-small",
             huggingfacehub_api_token=hf_token
         )
 
