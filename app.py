@@ -19,7 +19,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import ToolException 
 
-from langchain_community.tools import DuckDuckGoSearchRun
+# NOTE: DuckDuckGoSearchRun is REMOVED
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.document_loaders import TextLoader, WebBaseLoader
 
@@ -40,14 +40,12 @@ if 'current_chat_id' not in st.session_state:
         'title': "New Chat",
         'date': datetime.now()
     }
-# Initial check to ensure the current chat exists in history
 if st.session_state.current_chat_id not in st.session_state.chat_history:
      st.session_state.chat_history[st.session_state.current_chat_id] = {
         'messages': st.session_state.messages,
         'title': "New Chat",
         'date': datetime.now()
     }
-# New state for debug toggle
 if 'show_debug_log' not in st.session_state:
     st.session_state.show_debug_log = False
 
@@ -56,10 +54,8 @@ if 'show_debug_log' not in st.session_state:
 def initialize_dependencies():
     """Initializes ChromaDB client and SentenceTransformer model."""
     try:
-        # Use a temporary directory for ChromaDB storage during the session
         db_path = tempfile.mkdtemp() 
         db_client = chromadb.PersistentClient(path=db_path)
-        # SentenceTransformer for embedding, running on CPU
         model = SentenceTransformer("all-MiniLM-L6-v2", device='cpu')
         return db_client, model
     except Exception as e:
@@ -74,6 +70,8 @@ def get_collection():
     return st.session_state.db_client.get_or_create_collection(name=COLLECTION_NAME)
 
 # --- Tool Definitions ---
+
+# Only the RAG tool remains
 @tool
 def retrieve_documents(query: str) -> str:
     """
@@ -95,28 +93,17 @@ def retrieve_documents(query: str) -> str:
         st.warning(f"RAG Tool Error: {e}") 
         raise ToolException(f"Error in document retrieval: {e}. Cannot use RAG context.")
 
-@tool
-def duckduckgo_search(query: str) -> str:
-    """
-    Performs a DuckDuckGo web search for the given query (External Knowledge).
-    """
-    try:
-        search = DuckDuckGoSearchRun()
-        return search.run(query)
-    except Exception as e:
-        st.warning(f"Web Search Tool Error: {e}")
-        raise ToolException(f"Error in web search: {e}. Cannot use Web context.")
+# NOTE: duckduckgo_search tool is REMOVED
 
 # --- LangGraph Setup ---
 
-# Define the State
+# Define the State (simplified)
 class GraphState(TypedDict):
     """Represents the state of our graph/conversation."""
     messages: Annotated[Sequence[BaseMessage], operator.add]
     question: str
     rag_context: str
-    web_context: str
-    next_tool: str 
+    next_tool: str # Remains to handle RAG or Final Answer
     
 def get_llm():
     """Initializes and returns the ChatGoogleGenerativeAI model."""
@@ -127,24 +114,27 @@ def get_llm():
     
     gemini_model_name = st.secrets.get("GEMINI_MODEL_NAME", "gemini-2.5-flash") 
 
+    # Bind only the retrieve_documents tool
     llm = ChatGoogleGenerativeAI(
         google_api_key=gemini_api_key,
         model=gemini_model_name,
         temperature=0.0
-    ).bind_tools(tools=[retrieve_documents, duckduckgo_search])
+    ).bind_tools(tools=[retrieve_documents])
     return llm
 
 # --- LangGraph Nodes ---
 
 def call_model_to_decide(state: GraphState):
-    """Decides which tool (if any) to use based on the query and history."""
+    """Decides whether to use RAG or provide a Direct Answer."""
     llm = get_llm()
     
     system_prompt = (
         "You are an expert Context-Augmented Generation (CAG) system. "
-        "Your task is to decide whether to use 'retrieve_documents' (internal RAG), "
-        "'duckduckgo_search' (external web search), or directly provide a 'Final Answer'. "
-        "Prioritize the RAG tool if the question is about the uploaded content."
+        "Your task is to decide whether to use 'retrieve_documents' (internal RAG) or directly provide a 'Final Answer'. "
+        
+        "**Decision Priority:**\n"
+        "1. **RAG:** Use 'retrieve_documents' ONLY if the question is specifically about the **content of the uploaded documents** (e.g., specific terms, sections, or details within your file). "
+        "2. **Direct Answer:** Use 'Final Answer' for all other questions (general knowledge, trivial facts, or conversation flow). "
     )
     
     response = llm.invoke([HumanMessage(content=system_prompt)] + state["messages"])
@@ -184,48 +174,20 @@ def call_rag_tool(state: GraphState):
     
     return {"rag_context": rag_result, "messages": [tool_message]}
 
-def call_web_tool(state: GraphState):
-    """Executes the duckduckgo_search tool."""
-    last_message = state["messages"][-1]
-    
-    if not last_message.tool_calls:
-        return {"web_context": "Tool call failed to parse.", "messages": []}
-        
-    tool_call = last_message.tool_calls[0]
-    query = tool_call["args"]["query"]
-    tool_call_id = tool_call["id"]
-    
-    try:
-        web_result = duckduckgo_search.invoke({"query": query})
-        
-        tool_message = ToolMessage(
-            content=web_result, 
-            tool_call_id=tool_call_id
-        )
-    except ToolException as e:
-        tool_message = ToolMessage(
-            content=f"Tool Execution Error: {str(e)}", 
-            tool_call_id=tool_call_id
-        )
-        web_result = f"Error: {str(e)}"
-    
-    return {"web_context": web_result, "messages": [tool_message]}
+# NOTE: call_web_tool is REMOVED
 
 def generate_final_response(state: GraphState):
-    """Generates the final, context-augmented response (CAG Steps 7-12)."""
+    """Generates the final, context-augmented response."""
     llm = get_llm()
     
     rag_context = state.get("rag_context", "No internal documents retrieved.")
-    web_context = state.get("web_context", "No web search performed.")
     
     final_prompt_template = (
         "You are a sophisticated, context-aware AI assistant. "
+        "If RAG Context is empty or failed, use your internal general knowledge to answer the user's question. " 
         "Provide a final, complete, and coherent answer using the provided context and conversation history. "
-        "**CAG Principles:** 1. Prioritize **RAG Context**. 2. **Augment** with **Web Context** if needed. "
-        "3. **Check Consistency and Align Context** with the user's prior messages. "
-        "If you have executed tools, use the provided context to answer the user's last question.\n\n"
+        "**Principle:** Prioritize **RAG Context**. If you have executed the RAG tool, use the provided context to answer the user's last question.\n\n"
         f"--- RAG Context ---\n{rag_context}\n"
-        f"--- Web Context ---\n{web_context}\n"
         f"--- Messages/History Follow ---\n"
     )
     
@@ -240,7 +202,7 @@ def generate_final_response(state: GraphState):
         
     return {"messages": [response]} 
 
-# --- Graph Flow Logic ---
+# --- Graph Flow Logic (simplified) ---
 
 def route_tools(state: GraphState):
     """Decides the next step based on the LLM's decision."""
@@ -248,14 +210,12 @@ def route_tools(state: GraphState):
     
     if next_tool == "retrieve_documents":
         return "call_rag"
-    elif next_tool == "duckduckgo_search":
-        return "call_web"
     elif next_tool == "Final Answer":
         return END
     else:
         return END
         
-# Build the Graph
+# Build the Graph (simplified)
 @st.cache_resource
 def get_graph():
     """Initializes and compiles the LangGraph state machine."""
@@ -263,25 +223,23 @@ def get_graph():
 
     workflow.add_node("decide_tool", call_model_to_decide)
     workflow.add_node("call_rag", call_rag_tool)
-    workflow.add_node("call_web", call_web_tool)
     workflow.add_node("generate_response", generate_final_response)
 
     workflow.set_entry_point("decide_tool")
 
+    # Only two possible edges from decide_tool: call_rag or END
     workflow.add_conditional_edges(
         "decide_tool",
         route_tools,
-        {"call_rag": "call_rag", "call_web": "call_web", "Final Answer": END},
+        {"call_rag": "call_rag", "Final Answer": END},
     )
 
     workflow.add_edge("call_rag", "generate_response")
-    workflow.add_edge("call_web", "generate_response")
-
     workflow.add_edge("generate_response", END)
 
     return workflow.compile()
 
-# --- Utility Functions (Data Processing) ---
+# --- Utility Functions (Same as before) ---
 
 def clear_chroma_data():
     """Clears all documents from the ChromaDB collection."""
@@ -356,7 +314,6 @@ def handle_user_input():
             "messages": lc_messages,
             "question": prompt,
             "rag_context": "",
-            "web_context": "",
             "next_tool": "",
         }
 
@@ -396,7 +353,13 @@ def handle_user_input():
                         if decision == "Final Answer":
                             # When LLM decides Final Answer directly, extract the content here
                             final_message = node_output["messages"][-1]
-                            full_response = final_message.content
+                            
+                            # CRITICAL: Ensure content is captured or fallback is set before break
+                            if final_message.content:
+                                full_response = final_message.content
+                            else:
+                                full_response = "I've processed your request but could not generate a coherent final answer. Please rephrase."
+
                             response_placeholder.markdown(full_response)
                             # Break the loop since the answer is complete
                             break
@@ -407,11 +370,7 @@ def handle_user_input():
                             log_messages.append(f"   -> RAG Context Status: {'SUCCESS' if not rag_result.startswith('Error') else 'FAILURE'}")
                             current_log.markdown("\n".join(log_messages))
                         
-                    elif node_name == "call_web":
-                        web_result = node_output.get('web_context', 'N/A')
-                        if st.session_state.show_debug_log and current_log:
-                            log_messages.append(f"   -> Web Context Status: {'SUCCESS' if not web_result.startswith('Error') else 'FAILURE'}")
-                            current_log.markdown("\n".join(log_messages))
+                    # NOTE: call_web logic is REMOVED
 
                     elif node_name == "generate_response":
                         latest_message_chunk = node_output.get("messages", [])[-1]
@@ -447,9 +406,9 @@ def handle_user_input():
 
 
 # --- Main UI ---
-st.set_page_config(page_title="LangGraph CAG-RAG Chat with Gemini Flash")
-st.title("LangGraph Context-Augmented RAG (CAG) with Gemini Flash 🚀")
-st.markdown("This agent uses a state machine to intelligently apply **RAG (internal documents)** and **Web Search (external knowledge)** based on the query and conversation history.")
+st.set_page_config(page_title="LangGraph RAG Chat with Gemini Flash")
+st.title("LangGraph Pure RAG Agent with Gemini Flash 🚀")
+st.markdown("This agent uses a state machine to intelligently apply **RAG (internal documents)** or provide a **direct answer**.")
 st.markdown("---")
 
 # --- Sidebar ---
