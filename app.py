@@ -22,21 +22,19 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END
-# Note: Using a simple dictionary for in-memory checkpointing in Streamlit
-# For production persistence, use a LangGraph Checkpoint backend (e.g., SQLite, Postgres)
 
 COLLECTION_NAME = "agentic_rag_documents"
 
 # --- State Initialization ---
-# Ensure all session state keys are correctly initialized for Streamlit Cloud deployment
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = {}
 if 'current_chat_id' not in st.session_state:
     st.session_state.current_chat_id = str(uuid.uuid4())
-    st.session_session.chat_history[st.session_session.current_chat_id] = {
-        'messages': st.session_session.messages,
+    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+    st.session_state.chat_history[st.session_state.current_chat_id] = {
+        'messages': st.session_state.messages,
         'title': "New Chat",
         'date': datetime.now()
     }
@@ -55,13 +53,14 @@ def initialize_dependencies():
         st.error(f"Dependency initialization error: {e}")
         st.stop()
 
-# Initialize resources
-if 'db_client' not in st.session_session or 'model' not in st.session_session:
-    st.session_session.db_client, st.session_session.model = initialize_dependencies()
+# 🐛 CORRECTION: Replaced st.session_session with st.session_state
+if 'db_client' not in st.session_state or 'model' not in st.session_state:
+    st.session_state.db_client, st.session_state.model = initialize_dependencies()
 
 def get_collection():
     """Retrieves or creates the ChromaDB collection."""
-    return st.session_session.db_client.get_or_create_collection(name=COLLECTION_NAME)
+    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+    return st.session_state.db_client.get_or_create_collection(name=COLLECTION_NAME)
 
 # --- Tool Definitions ---
 @tool
@@ -72,7 +71,8 @@ def retrieve_documents(query: str) -> str:
     """
     try:
         collection = get_collection()
-        model = st.session_session.model
+        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+        model = st.session_state.model
         query_embedding = model.encode(query).tolist()
         results = collection.query(query_embeddings=query_embedding, n_results=3) 
         
@@ -113,7 +113,6 @@ def get_llm():
     
     gemini_model_name = st.secrets.get("GEMINI_MODEL_NAME", "gemini-2.5-flash") 
 
-    # Bind tools to the LLM for function calling capability (CAG Step 1: Process Input/Decide)
     llm = ChatGoogleGenerativeAI(
         google_api_key=gemini_api_key,
         model=gemini_model_name,
@@ -150,7 +149,6 @@ def call_rag_tool(state: GraphState):
     query = tool_call["args"]["query"]
     rag_result = retrieve_documents.invoke({"query": query})
     
-    # Inject context into the state (CAG Step 3, 4, 6)
     return {"rag_context": rag_result, "messages": state["messages"]}
 
 def call_web_tool(state: GraphState):
@@ -160,7 +158,6 @@ def call_web_tool(state: GraphState):
     query = tool_call["args"]["query"]
     web_result = duckduckgo_search.invoke({"query": query})
     
-    # Inject context into the state (CAG Step 3, 5, 6)
     return {"web_context": web_result, "messages": state["messages"]}
 
 def generate_final_response(state: GraphState):
@@ -198,7 +195,6 @@ def route_tools(state: GraphState):
     elif next_tool == "Final Answer":
         return END 
     else:
-        # If a tool was called and executed, the next step is final generation
         return "generate_response"
         
 # Build the Graph
@@ -235,8 +231,9 @@ def get_graph():
 def clear_chroma_data():
     """Clears all documents from the ChromaDB collection."""
     try:
-        if COLLECTION_NAME in [col.name for col in st.session_session.db_client.list_collections()]:
-            st.session_session.db_client.delete_collection(name=COLLECTION_NAME)
+        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+        if COLLECTION_NAME in [col.name for col in st.session_state.db_client.list_collections()]:
+            st.session_state.db_client.delete_collection(name=COLLECTION_NAME)
     except Exception as e:
         st.error(f"Error clearing collection: {e}")
 
@@ -253,7 +250,8 @@ def split_documents(text_data, chunk_size=500, chunk_overlap=100) -> List[str]:
 def process_and_store_documents(documents: List[str]):
     """Embeds and stores documents in ChromaDB."""
     collection = get_collection()
-    model = st.session_session.model
+    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+    model = st.session_state.model
 
     embeddings = model.encode(documents).tolist()
     document_ids = [str(uuid.uuid4()) for _ in documents]
@@ -267,7 +265,8 @@ def is_valid_github_raw_url(url: str) -> bool:
 
 def display_chat_messages():
     """Displays the current chat history in the main area."""
-    for message in st.session_session.messages:
+    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+    for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
@@ -277,7 +276,8 @@ def handle_user_input():
     """Handles user input and gets a streamed response from the LangGraph agent."""
     if prompt := st.chat_input("Ask about your document or a general question..."):
         # 1. Store user message
-        st.session_session.messages.append({"role": "user", "content": prompt})
+        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+        st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
             
@@ -286,7 +286,8 @@ def handle_user_input():
         
         # Convert session messages to LangChain BaseMessage objects
         lc_messages = []
-        for msg in st.session_session.messages:
+        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+        for msg in st.session_state.messages:
             if msg["role"] == "user":
                 lc_messages.append(HumanMessage(content=msg["content"]))
             elif msg["role"] == "assistant":
@@ -331,14 +332,16 @@ def handle_user_input():
                 response_placeholder.markdown(full_response)
                 
         # 4. Store assistant message and update chat history
-        st.session_session.messages.append({"role": "assistant", "content": full_response})
+        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
         
         # Auto-update chat title on first message
-        if st.session_session.current_chat_id:
-            chat_data = st.session_session.chat_history.get(st.session_session.current_chat_id)
+        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+        if st.session_state.current_chat_id:
+            chat_data = st.session_state.chat_history.get(st.session_state.current_chat_id)
             if chat_data and chat_data['title'] == "New Chat":
                 new_title = " ".join(prompt.split()[:5]) + "..." if len(prompt.split()) > 5 else prompt
-                st.session_session.chat_history[st.session_session.current_chat_id]['title'] = new_title
+                st.session_state.chat_history[st.session_state.current_chat_id]['title'] = new_title
 
 
 # --- Main UI ---
@@ -352,12 +355,13 @@ with st.sidebar:
     st.header("Chat Controls")
     
     if st.button("Start New Chat"):
-        st.session_session.messages = []
+        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+        st.session_state.messages = []
         clear_chroma_data() # Clear RAG context for the new chat
         new_chat_id = str(uuid.uuid4())
-        st.session_session.current_chat_id = new_chat_id
-        st.session_session.chat_history[new_chat_id] = {
-            'messages': st.session_session.messages,
+        st.session_state.current_chat_id = new_chat_id
+        st.session_state.chat_history[new_chat_id] = {
+            'messages': st.session_state.messages,
             'title': "New Chat",
             'date': datetime.now()
         }
@@ -365,24 +369,25 @@ with st.sidebar:
         
     st.subheader("Chat History")
     
-    if 'chat_history' in st.session_session and st.session_session.chat_history:
+    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
+    if 'chat_history' in st.session_state and st.session_state.chat_history:
         sorted_chat_ids = sorted(
-            st.session_session.chat_history.keys(),
-            key=lambda x: st.session_session.chat_history[x]['date'],
+            st.session_state.chat_history.keys(),
+            key=lambda x: st.session_state.chat_history[x]['date'],
             reverse=True
         )
         for chat_id in sorted_chat_ids:
-            chat_data = st.session_session.chat_history[chat_id]
+            chat_data = st.session_state.chat_history[chat_id]
             chat_title = chat_data['title']
             date_str = chat_data['date'].strftime("%b %d, %I:%M %p")
             
-            is_current = chat_id == st.session_session.current_chat_id
+            is_current = chat_id == st.session_state.current_chat_id
             button_label = f"**{'* ' if is_current else ''}{chat_title}{'*' if is_current else ''}** - {date_str}"
             
             if st.button(button_label, key=f"hist_btn_{chat_id}"):
-                if st.session_session.current_chat_id != chat_id:
-                    st.session_session.current_chat_id = chat_id
-                    st.session_session.messages = st.session_session.chat_history[chat_id]['messages']
+                if st.session_state.current_chat_id != chat_id:
+                    st.session_state.current_chat_id = chat_id
+                    st.session_state.messages = st.session_state.chat_history[chat_id]['messages']
                     st.experimental_rerun()
     
 # Document Upload and Processing Area
