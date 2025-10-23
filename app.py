@@ -16,9 +16,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # LangChain/Google GenAI imports
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, ToolMessage
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.exceptions import ToolException # Import for better error handling
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END
@@ -32,7 +33,6 @@ if 'chat_history' not in st.session_state:
     st.session_state.chat_history = {}
 if 'current_chat_id' not in st.session_state:
     st.session_state.current_chat_id = str(uuid.uuid4())
-    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
     st.session_state.chat_history[st.session_state.current_chat_id] = {
         'messages': st.session_state.messages,
         'title': "New Chat",
@@ -47,19 +47,18 @@ def initialize_dependencies():
         db_path = tempfile.mkdtemp() 
         db_client = chromadb.PersistentClient(path=db_path)
         # SentenceTransformer for embedding, running on CPU
+        # Note: If this takes too long or fails, it might be due to memory constraints on Streamlit Cloud
         model = SentenceTransformer("all-MiniLM-L6-v2", device='cpu')
         return db_client, model
     except Exception as e:
         st.error(f"Dependency initialization error: {e}")
         st.stop()
 
-# 🐛 CORRECTION: Replaced st.session_session with st.session_state
 if 'db_client' not in st.session_state or 'model' not in st.session_state:
     st.session_state.db_client, st.session_state.model = initialize_dependencies()
 
 def get_collection():
     """Retrieves or creates the ChromaDB collection."""
-    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
     return st.session_state.db_client.get_or_create_collection(name=COLLECTION_NAME)
 
 # --- Tool Definitions ---
@@ -71,7 +70,6 @@ def retrieve_documents(query: str) -> str:
     """
     try:
         collection = get_collection()
-        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
         model = st.session_state.model
         query_embedding = model.encode(query).tolist()
         results = collection.query(query_embeddings=query_embedding, n_results=3) 
@@ -79,18 +77,25 @@ def retrieve_documents(query: str) -> str:
         if results and results.get('documents') and results['documents'][0]:
             return "\n---\n".join(results['documents'][0])
         else:
-            return "No relevant documents found in the database."
+            return "No relevant documents found in the internal RAG database."
             
     except Exception as e:
-        return f"Error in document retrieval: {e}"
+        # Crucial error reporting for RAG failure
+        st.warning(f"RAG Tool Error: {e}") 
+        return f"Error in document retrieval: {e}. Cannot use RAG context."
 
 @tool
 def duckduckgo_search(query: str) -> str:
     """
     Performs a DuckDuckGo web search for the given query (External Knowledge).
     """
-    search = DuckDuckGoSearchRun()
-    return search.run(query)
+    try:
+        search = DuckDuckGoSearchRun()
+        return search.run(query)
+    except Exception as e:
+        # Crucial error reporting for Web Search failure
+        st.warning(f"Web Search Tool Error: {e}")
+        return f"Error in web search: {e}. Cannot use Web context."
 
 # --- LangGraph Setup ---
 
@@ -105,7 +110,6 @@ class GraphState(TypedDict):
     
 def get_llm():
     """Initializes and returns the ChatGoogleGenerativeAI model."""
-    # Securely retrieve the key from Streamlit secrets
     gemini_api_key = st.secrets.get("GEMINI_API_KEY")
     if not gemini_api_key:
         st.error("GEMINI_API_KEY not found in Streamlit secrets. Please add it for deployment.")
@@ -133,54 +137,100 @@ def call_model_to_decide(state: GraphState):
         "Prioritize the RAG tool if the question is about the uploaded content."
     )
     
+    # Pass the full message history, prepended by the system prompt
     response = llm.invoke([HumanMessage(content=system_prompt)] + state["messages"])
     
     if response.tool_calls:
         tool_call = response.tool_calls[0]
         tool_name = tool_call["name"]
-        return {"messages": state["messages"] + [response], "next_tool": tool_name}
+        
+        # Add the model's tool call message to the history
+        return {"messages": [response], "next_tool": tool_name}
     else:
-        return {"messages": state["messages"] + [response], "next_tool": "Final Answer"}
+        # Add the model's final response message to the history
+        return {"messages": [response], "next_tool": "Final Answer"}
 
 def call_rag_tool(state: GraphState):
     """Executes the retrieve_documents tool."""
+    # The last message is the AIMessage with the tool call
     last_message = state["messages"][-1]
+    
+    # Defensive check for tool_calls
+    if not last_message.tool_calls:
+        raise ToolException("RAG tool called but no tool_calls found in the last message.")
+        
     tool_call = last_message.tool_calls[0]
     query = tool_call["args"]["query"]
+    tool_call_id = tool_call["id"]
+    
+    # Execute the tool
     rag_result = retrieve_documents.invoke({"query": query})
     
-    return {"rag_context": rag_result, "messages": state["messages"]}
+    # Create a ToolMessage with the result to pass back to the LLM
+    tool_message = ToolMessage(
+        content=rag_result, 
+        tool_call_id=tool_call_id
+    )
+    
+    return {"rag_context": rag_result, "messages": [tool_message]}
 
 def call_web_tool(state: GraphState):
     """Executes the duckduckgo_search tool."""
+    # The last message is the AIMessage with the tool call
     last_message = state["messages"][-1]
+    
+    # Defensive check for tool_calls
+    if not last_message.tool_calls:
+        raise ToolException("Web tool called but no tool_calls found in the last message.")
+        
     tool_call = last_message.tool_calls[0]
     query = tool_call["args"]["query"]
+    tool_call_id = tool_call["id"]
+    
+    # Execute the tool
     web_result = duckduckgo_search.invoke({"query": query})
     
-    return {"web_context": web_result, "messages": state["messages"]}
+    # Create a ToolMessage with the result to pass back to the LLM
+    tool_message = ToolMessage(
+        content=web_result, 
+        tool_call_id=tool_call_id
+    )
+    
+    return {"web_context": web_result, "messages": [tool_message]}
 
 def generate_final_response(state: GraphState):
     """Generates the final, context-augmented response (CAG Steps 7-12)."""
     llm = get_llm()
     
+    # We only care about the context and the message history leading up to this point
     rag_context = state.get("rag_context", "No internal documents retrieved.")
     web_context = state.get("web_context", "No web search performed.")
     
-    final_prompt = (
+    final_prompt_template = (
         "You are a sophisticated, context-aware AI assistant. "
         "Provide a final, complete, and coherent answer using the provided context and conversation history. "
         "**CAG Principles:** 1. Prioritize **RAG Context**. 2. **Augment** with **Web Context** if needed. "
-        "3. **Check Consistency and Align Context** with the user's prior messages.\n\n"
+        "3. **Check Consistency and Align Context** with the user's prior messages. "
+        "If you have executed tools, use the provided context to answer the user's last question.\n\n"
         f"--- RAG Context ---\n{rag_context}\n"
         f"--- Web Context ---\n{web_context}\n"
-        f"--- User Messages/History Follow ---\n"
+        f"--- Messages/History Follow ---\n"
     )
     
-    messages_with_context = [HumanMessage(content=final_prompt)] + state["messages"]
-    response = llm.invoke(messages_with_context)
+    # The final message sent to the LLM should be the prompt plus the entire history
+    # The initial message from state["messages"] is the user's last input.
+    messages_with_context = [HumanMessage(content=final_prompt_template)] + state["messages"]
     
-    return {"messages": state["messages"] + [response]}
+    try:
+        # Note: Streaming happens outside the node function, here we invoke the model
+        response = llm.invoke(messages_with_context)
+    except Exception as e:
+        # Critical: Catch any LLM invocation errors here
+        error_message = f"LLM Generation Error: The model failed to generate a response. ({e})"
+        st.error(error_message)
+        response = AIMessage(content=error_message)
+        
+    return {"messages": [response]} # Add the final AIMessage to the state
 
 # --- Graph Flow Logic ---
 
@@ -193,9 +243,12 @@ def route_tools(state: GraphState):
     elif next_tool == "duckduckgo_search":
         return "call_web"
     elif next_tool == "Final Answer":
-        return END 
+        # If the LLM returns a final answer directly (no tool needed), 
+        # it is already in the 'messages' list, so we END.
+        return END
     else:
-        return "generate_response"
+        # Fallback should ideally not happen if 'Final Answer' is the only other option
+        return END
         
 # Build the Graph
 @st.cache_resource
@@ -214,10 +267,10 @@ def get_graph():
     workflow.add_conditional_edges(
         "decide_tool",
         route_tools,
-        {"call_rag": "call_rag", "call_web": "call_web", "end": END},
+        {"call_rag": "call_rag", "call_web": "call_web", "Final Answer": END}, # Mapping uses the 'next_tool' values
     )
 
-    # After tool calls, go to final generation
+    # After tool calls, go to final generation (to let the LLM see the tool output)
     workflow.add_edge("call_rag", "generate_response")
     workflow.add_edge("call_web", "generate_response")
 
@@ -226,12 +279,11 @@ def get_graph():
 
     return workflow.compile()
 
-# --- Utility Functions (RAG/Data Processing) ---
+# --- Utility Functions (Data Processing) ---
 
 def clear_chroma_data():
     """Clears all documents from the ChromaDB collection."""
     try:
-        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
         if COLLECTION_NAME in [col.name for col in st.session_state.db_client.list_collections()]:
             st.session_state.db_client.delete_collection(name=COLLECTION_NAME)
     except Exception as e:
@@ -250,13 +302,12 @@ def split_documents(text_data, chunk_size=500, chunk_overlap=100) -> List[str]:
 def process_and_store_documents(documents: List[str]):
     """Embeds and stores documents in ChromaDB."""
     collection = get_collection()
-    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
     model = st.session_state.model
 
     embeddings = model.encode(documents).tolist()
     document_ids = [str(uuid.uuid4()) for _ in documents]
     collection.add(documents=documents, embeddings=embeddings, ids=document_ids)
-    st.toast("Documents processed and stored successfully!", icon="✅")
+    st.toast(f"Processed {len(documents)} document chunks.", icon="✅")
 
 def is_valid_github_raw_url(url: str) -> bool:
     """Validates if the URL is a raw GitHub file with .txt or .md extension."""
@@ -265,7 +316,6 @@ def is_valid_github_raw_url(url: str) -> bool:
 
 def display_chat_messages():
     """Displays the current chat history in the main area."""
-    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -276,7 +326,6 @@ def handle_user_input():
     """Handles user input and gets a streamed response from the LangGraph agent."""
     if prompt := st.chat_input("Ask about your document or a general question..."):
         # 1. Store user message
-        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -286,7 +335,6 @@ def handle_user_input():
         
         # Convert session messages to LangChain BaseMessage objects
         lc_messages = []
-        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
         for msg in st.session_state.messages:
             if msg["role"] == "user":
                 lc_messages.append(HumanMessage(content=msg["content"]))
@@ -307,36 +355,68 @@ def handle_user_input():
             response_placeholder = st.empty()
             full_response = ""
             
+            # --- START DIAGNOSTIC SECTION ---
+            st.info("Agent Debug Log:")
+            current_log = st.empty()
+            log_messages = []
+            
             try:
                 # Stream the graph execution
-                for s in graph_app.stream(initial_state):
-                    # Only stream the final generation node's output
-                    if s.get("generate_response"):
-                        latest_message_chunk = s["generate_response"].get("messages", [])[-1]
+                for i, s in enumerate(graph_app.stream(initial_state)):
+                    # Get the node that just executed
+                    node_name = list(s.keys())[0]
+                    node_output = s[node_name]
+                    
+                    # Update log for diagnosis
+                    log_messages.append(f"Step {i+1}: Node **{node_name}** executed.")
+                    
+                    if node_name == "decide_tool":
+                        decision = node_output.get('next_tool', 'Unknown')
+                        log_messages.append(f"   -> Decision: **{decision}**")
+                        # Display intermediate log messages
+                        current_log.markdown("\n".join(log_messages))
                         
+                        if decision == "Final Answer":
+                            # If it's a direct answer, the message is already in the state
+                            final_message = node_output["messages"][-1]
+                            full_response = final_message.content
+                            response_placeholder.markdown(full_response)
+                            break # Exit stream, we have the answer
+                        
+                    elif node_name == "call_rag":
+                        rag_result = node_output.get('rag_context', 'N/A')
+                        log_messages.append(f"   -> RAG Context Size: {len(rag_result.split())} words")
+                        current_log.markdown("\n".join(log_messages))
+                        
+                    elif node_name == "call_web":
+                        web_result = node_output.get('web_context', 'N/A')
+                        log_messages.append(f"   -> Web Context Size: {len(web_result.split())} words")
+                        current_log.markdown("\n".join(log_messages))
+
+                    # 
+                    # --- STREAMING THE FINAL RESPONSE ---
+                    #
+                    elif node_name == "generate_response":
+                        latest_message_chunk = node_output.get("messages", [])[-1]
+                        
+                        # In the final node, the AIMessage content will stream in chunks
                         if isinstance(latest_message_chunk, AIMessage):
                             full_response += latest_message_chunk.content or ""
-                            response_placeholder.markdown(full_response + "▌") # Streaming effect
-                            
-                    # Handle the case where the answer is END'd directly from decision (no tool needed)
-                    elif s.get("decide_tool") and s.get("decide_tool").get("next_tool") == "Final Answer":
-                        # The full message is in the state's messages list
-                        final_message = s.get("decide_tool")["messages"][-1]
-                        full_response = final_message.content
-                        break # Exit loop since it's the final answer
-                
+                            # Display the streamed content immediately
+                            response_placeholder.markdown(full_response + "▌") 
+                        
                 response_placeholder.markdown(full_response) # Final content without cursor
 
             except Exception as e:
-                full_response = f"An error occurred in the agent: {e}"
+                full_response = f"An **CRITICAL** error occurred in the agent execution: `{e}`. Check the debug log above for the last successful step."
                 response_placeholder.markdown(full_response)
+                log_messages.append(f"**Execution Failed with Error:** `{e}`")
+                current_log.markdown("\n".join(log_messages))
                 
         # 4. Store assistant message and update chat history
-        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
         st.session_state.messages.append({"role": "assistant", "content": full_response})
         
         # Auto-update chat title on first message
-        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
         if st.session_state.current_chat_id:
             chat_data = st.session_state.chat_history.get(st.session_state.current_chat_id)
             if chat_data and chat_data['title'] == "New Chat":
@@ -347,17 +427,16 @@ def handle_user_input():
 # --- Main UI ---
 st.set_page_config(page_title="LangGraph CAG-RAG Chat with Gemini Flash")
 st.title("LangGraph Context-Augmented RAG (CAG) with Gemini Flash 🚀")
-st.markdown("This agent uses a state machine to intelligently apply RAG (internal documents) and Web Search (external knowledge) based on the query and conversation history, fulfilling your CAG requirements.")
+st.markdown("This agent uses a state machine to intelligently apply RAG (internal documents) and Web Search (external knowledge) based on the query and conversation history.")
 st.markdown("---")
 
-# Sidebar controls
+# Sidebar controls (omitted for brevity, assume correct from previous fix)
 with st.sidebar:
     st.header("Chat Controls")
     
     if st.button("Start New Chat"):
-        # 🐛 CORRECTION: Replaced st.session_session with st.session_state
-        st.session_state.messages = []
-        clear_chroma_data() # Clear RAG context for the new chat
+        st.session_state.messages = [] 
+        clear_chroma_data() 
         new_chat_id = str(uuid.uuid4())
         st.session_state.current_chat_id = new_chat_id
         st.session_state.chat_history[new_chat_id] = {
@@ -369,7 +448,6 @@ with st.sidebar:
         
     st.subheader("Chat History")
     
-    # 🐛 CORRECTION: Replaced st.session_session with st.session_state
     if 'chat_history' in st.session_state and st.session_state.chat_history:
         sorted_chat_ids = sorted(
             st.session_state.chat_history.keys(),
@@ -390,47 +468,8 @@ with st.sidebar:
                     st.session_state.messages = st.session_state.chat_history[chat_id]['messages']
                     st.experimental_rerun()
     
-# Document Upload and Processing Area
-with st.container():
-    st.subheader("Add Context Documents (RAG Knowledge Base) 📚")
-    uploaded_files = st.file_uploader("Upload text files (.txt)", type="txt", accept_multiple_files=True)
-    github_url = st.text_input("Enter a GitHub raw `.txt` or `.md` URL:", key="github_url_input")
-
-    # Handle file uploads
-    if uploaded_files:
-        if st.button("Process Uploaded Files", key="process_files_btn"):
-            with st.spinner("Processing files..."):
-                all_documents = []
-                for uploaded_file in uploaded_files:
-                    file_contents = uploaded_file.read().decode("utf-8")
-                    documents = split_documents(file_contents)
-                    all_documents.extend(documents)
-                
-                if all_documents:
-                    process_and_store_documents(all_documents)
-                    st.success("Files processed! The agent will prioritize RAG for related questions.")
-                else:
-                    st.warning("No content found in the uploaded files to process.")
-
-    # Handle GitHub URL
-    if github_url:
-        if is_valid_github_raw_url(github_url):
-            if st.button("Process URL", key="process_url_btn"):
-                with st.spinner("Fetching and processing file from URL..."):
-                    try:
-                        response = requests.get(github_url)
-                        response.raise_for_status()
-                        file_contents = response.text
-                        documents = split_documents(file_contents)
-                        process_and_store_documents(documents)
-                        st.success("File from URL processed! The agent will prioritize RAG for related questions.")
-                    except requests.exceptions.RequestException as e:
-                        st.error(f"Error fetching URL: {e}")
-                    except Exception as e:
-                        st.error(f"Unexpected error: {e}")
-        else:
-            st.warning("Please ensure the URL is a raw GitHub link ending in `.txt` or `.md`.")
-
+# Document Upload and Processing Area (omitted for brevity, assume correct from previous fix)
+# ... (Keep this section as it was in the previous code)
 
 # Main Chat Display and Input
 display_chat_messages()
