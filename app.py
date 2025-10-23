@@ -371,11 +371,16 @@ def handle_user_input():
                 current_log = st.empty()
                 log_messages = []
             else:
-                current_log = None # Placeholder to prevent errors if not displayed
+                current_log = None
             # -------------------------------------
             
             try:
                 for i, s in enumerate(graph_app.stream(initial_state)):
+                    
+                    # FIX: Skip the __end__ key which causes the critical error
+                    if '__end__' in s:
+                        continue 
+                    
                     node_name = list(s.keys())[0]
                     node_output = s[node_name]
                     
@@ -389,10 +394,12 @@ def handle_user_input():
                             current_log.markdown("\n".join(log_messages))
                         
                         if decision == "Final Answer":
+                            # When LLM decides Final Answer directly, extract the content here
                             final_message = node_output["messages"][-1]
                             full_response = final_message.content
                             response_placeholder.markdown(full_response)
-                            break 
+                            # Break the loop since the answer is complete
+                            break
                         
                     elif node_name == "call_rag":
                         rag_result = node_output.get('rag_context', 'N/A')
@@ -409,21 +416,27 @@ def handle_user_input():
                     elif node_name == "generate_response":
                         latest_message_chunk = node_output.get("messages", [])[-1]
                         
+                        # Streaming happens only in the final generation step
                         if isinstance(latest_message_chunk, AIMessage):
                             full_response += latest_message_chunk.content or ""
                             response_placeholder.markdown(full_response + "▌") 
                         
-                response_placeholder.markdown(full_response) 
+                response_placeholder.markdown(full_response) # Final content without cursor
 
             except Exception as e:
-                full_response = f"An **CRITICAL** error occurred in the agent execution: `{e}`. Check the debug log above for the last successful step (if enabled)."
-                response_placeholder.markdown(full_response)
-                if st.session_state.show_debug_log and current_log:
-                    log_messages.append(f"**Execution Failed with Error:** `{e}`")
-                    current_log.markdown("\n".join(log_messages))
+                # Only show this if the error is something *other* than the expected graph end
+                if str(e) == '__end__':
+                    pass
+                else:
+                    full_response = f"An **CRITICAL** error occurred in the agent execution: `{e}`. Check the debug log above for the last successful step (if enabled)."
+                    response_placeholder.markdown(full_response)
+                    if st.session_state.show_debug_log and current_log:
+                        log_messages.append(f"**Execution Failed with Error:** `{e}`")
+                        current_log.markdown("\n".join(log_messages))
                 
         # 4. Store assistant message and update chat history
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+        if full_response:
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
         
         # Auto-update chat title on first message
         if st.session_state.current_chat_id:
@@ -493,11 +506,11 @@ with st.sidebar:
         }
         st.experimental_rerun()
         
-    # --- DEBUG TOGGLE ADDED HERE ---
+    # --- DEBUG TOGGLE ---
     st.subheader("Agent Debug Settings")
     st.checkbox("Show LangGraph Execution Log", key='show_debug_log')
     st.markdown("---")
-    # -------------------------------
+    # ----------------------
     
     st.subheader("3. Chat History")
     
