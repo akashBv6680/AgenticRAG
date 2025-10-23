@@ -23,7 +23,11 @@ from langchain_core.tools import ToolException
 # ----------------------------------------------------
 
 from langchain_community.tools import DuckDuckGoSearchRun
-from langchain_google_genai import ChatGoogleGenerAI
+
+# --- FIX 3: CORRECTED IMPORT NAME FOR GOOGLE CHAT MODEL ---
+from langchain_google_genai import ChatGoogleGenerativeAI # <- FIXED: Added 'tive'
+# ----------------------------------------------------------
+
 from langchain_community.document_loaders import TextLoader, WebBaseLoader
 
 # LangGraph imports
@@ -129,7 +133,7 @@ def get_llm():
     
     gemini_model_name = st.secrets.get("GEMINI_MODEL_NAME", "gemini-2.5-flash") 
 
-    llm = ChatGoogleGenerAI(
+    llm = ChatGoogleGenerativeAI(
         google_api_key=gemini_api_key,
         model=gemini_model_name,
         temperature=0.0
