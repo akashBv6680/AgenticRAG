@@ -4,11 +4,14 @@ chromadb==0.4.24
 sentence-transformers==2.7.0
 numpy==1.26.4
 requests==2.32.3
+# Core LangGraph/LangChain components
+langgraph>=0.0.30
 langchain-core
 langchain-community
 langchain-google-genai
+# Utility libraries
 langchain-text-splitters
 duckduckgo-search
 torch
 transformers
-langgraph
+gitpython==3.1.43
