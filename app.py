@@ -19,9 +19,10 @@ from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import ToolException 
 
-# NOTE: DuckDuckGoSearchRun is REMOVED
+# NOTE: DuckDuckGoSearchRun is NOT imported
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.document_loaders import TextLoader, WebBaseLoader
+from bs4 import BeautifulSoup # Required for WebBaseLoader (URL processing in sidebar)
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END
@@ -93,17 +94,15 @@ def retrieve_documents(query: str) -> str:
         st.warning(f"RAG Tool Error: {e}") 
         raise ToolException(f"Error in document retrieval: {e}. Cannot use RAG context.")
 
-# NOTE: duckduckgo_search tool is REMOVED
-
 # --- LangGraph Setup ---
 
-# Define the State (simplified)
+# Define the State (Simplified: 'web_context' removed)
 class GraphState(TypedDict):
     """Represents the state of our graph/conversation."""
     messages: Annotated[Sequence[BaseMessage], operator.add]
     question: str
     rag_context: str
-    next_tool: str # Remains to handle RAG or Final Answer
+    next_tool: str
     
 def get_llm():
     """Initializes and returns the ChatGoogleGenerativeAI model."""
@@ -129,12 +128,13 @@ def call_model_to_decide(state: GraphState):
     llm = get_llm()
     
     system_prompt = (
-        "You are an expert Context-Augmented Generation (CAG) system. "
+        "You are an expert Context-Augmented Generation (CAG) system focused only on internal documents. "
         "Your task is to decide whether to use 'retrieve_documents' (internal RAG) or directly provide a 'Final Answer'. "
         
         "**Decision Priority:**\n"
         "1. **RAG:** Use 'retrieve_documents' ONLY if the question is specifically about the **content of the uploaded documents** (e.g., specific terms, sections, or details within your file). "
         "2. **Direct Answer:** Use 'Final Answer' for all other questions (general knowledge, trivial facts, or conversation flow). "
+        "DO NOT attempt to use any web search tool, as none are available."
     )
     
     response = llm.invoke([HumanMessage(content=system_prompt)] + state["messages"])
@@ -174,8 +174,6 @@ def call_rag_tool(state: GraphState):
     
     return {"rag_context": rag_result, "messages": [tool_message]}
 
-# NOTE: call_web_tool is REMOVED
-
 def generate_final_response(state: GraphState):
     """Generates the final, context-augmented response."""
     llm = get_llm()
@@ -202,7 +200,7 @@ def generate_final_response(state: GraphState):
         
     return {"messages": [response]} 
 
-# --- Graph Flow Logic (simplified) ---
+# --- Graph Flow Logic ---
 
 def route_tools(state: GraphState):
     """Decides the next step based on the LLM's decision."""
@@ -215,10 +213,10 @@ def route_tools(state: GraphState):
     else:
         return END
         
-# Build the Graph (simplified)
+# Build the Graph (IMPORTANT: Function name changed to clear cache)
 @st.cache_resource
-def get_graph():
-    """Initializes and compiles the LangGraph state machine."""
+def get_rag_only_graph():
+    """Initializes and compiles the LangGraph state machine (Pure RAG)."""
     workflow = StateGraph(GraphState)
 
     workflow.add_node("decide_tool", call_model_to_decide)
@@ -227,7 +225,6 @@ def get_graph():
 
     workflow.set_entry_point("decide_tool")
 
-    # Only two possible edges from decide_tool: call_rag or END
     workflow.add_conditional_edges(
         "decide_tool",
         route_tools,
@@ -239,7 +236,7 @@ def get_graph():
 
     return workflow.compile()
 
-# --- Utility Functions (Same as before) ---
+# --- Utility Functions (Data Processing) ---
 
 def clear_chroma_data():
     """Clears all documents from the ChromaDB collection."""
@@ -298,8 +295,8 @@ def handle_user_input():
         with st.chat_message("user"):
             st.markdown(prompt)
             
-        # 2. Setup Graph and initial state
-        graph_app = get_graph()
+        # 2. Setup Graph and initial state (using the new function name)
+        graph_app = get_rag_only_graph()
         
         # Convert session messages to LangChain BaseMessage objects
         lc_messages = []
@@ -351,7 +348,6 @@ def handle_user_input():
                             current_log.markdown("\n".join(log_messages))
                         
                         if decision == "Final Answer":
-                            # When LLM decides Final Answer directly, extract the content here
                             final_message = node_output["messages"][-1]
                             
                             # CRITICAL: Ensure content is captured or fallback is set before break
@@ -361,7 +357,6 @@ def handle_user_input():
                                 full_response = "I've processed your request but could not generate a coherent final answer. Please rephrase."
 
                             response_placeholder.markdown(full_response)
-                            # Break the loop since the answer is complete
                             break
                         
                     elif node_name == "call_rag":
@@ -369,21 +364,17 @@ def handle_user_input():
                         if st.session_state.show_debug_log and current_log:
                             log_messages.append(f"   -> RAG Context Status: {'SUCCESS' if not rag_result.startswith('Error') else 'FAILURE'}")
                             current_log.markdown("\n".join(log_messages))
-                        
-                    # NOTE: call_web logic is REMOVED
 
                     elif node_name == "generate_response":
                         latest_message_chunk = node_output.get("messages", [])[-1]
                         
-                        # Streaming happens only in the final generation step
                         if isinstance(latest_message_chunk, AIMessage):
                             full_response += latest_message_chunk.content or ""
                             response_placeholder.markdown(full_response + "▌") 
                         
-                response_placeholder.markdown(full_response) # Final content without cursor
+                response_placeholder.markdown(full_response)
 
             except Exception as e:
-                # Only show this if the error is something *other* than the expected graph end
                 if str(e) == '__end__':
                     pass
                 else:
@@ -393,11 +384,11 @@ def handle_user_input():
                         log_messages.append(f"**Execution Failed with Error:** `{e}`")
                         current_log.markdown("\n".join(log_messages))
                 
-        # 4. Store assistant message and update chat history
+        # 4. Store assistant message
         if full_response:
             st.session_state.messages.append({"role": "assistant", "content": full_response})
         
-        # Auto-update chat title on first message
+        # Auto-update chat title
         if st.session_state.current_chat_id:
             chat_data = st.session_state.chat_history.get(st.session_state.current_chat_id)
             if chat_data and chat_data['title'] == "New Chat":
@@ -435,6 +426,7 @@ with st.sidebar:
         if github_url and is_valid_github_raw_url(github_url):
             try:
                 st.info("Fetching content from URL...")
+                # Note: BeautifulSoup is required here for WebBaseLoader
                 loader = WebBaseLoader(github_url)
                 docs = loader.load()
                 
