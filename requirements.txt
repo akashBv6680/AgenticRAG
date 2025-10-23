@@ -15,3 +15,4 @@ duckduckgo-search
 torch
 transformers
 gitpython==3.1.43
+beautifulsoup4
