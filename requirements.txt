@@ -13,3 +13,5 @@ langchain-core
 langchain-community
 langchain-tavily
 duckduckgo-search
+langchain-google-genai
+
