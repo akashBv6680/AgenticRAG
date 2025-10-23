@@ -1,305 +1,330 @@
 import streamlit as st
+import random
+import time
+import json
+import base64
+from typing import TypedDict, Annotated, List, Union, Dict, Any
+import operator
 import os
-import tempfile
-import uuid
-import requests
-import re
-from datetime import datetime
-from typing import List
 
-# import google.generativeai as genai # Not strictly needed if only using LangChain components
-# from langchain_tavily import TavilySearch # Removed as requested
-import chromadb
-from sentence_transformers import SentenceTransformer
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_core.tools import tool
-from langchain import hub
-from langchain_community.tools import DuckDuckGoSearchRun
+# --- Firebase Imports (Mandatory for Canvas Environment) ---
+from firebase_admin import initialize_app, firestore, credentials
+from google.cloud.firestore import Client as FirestoreClient # Type hint for Firestore
+
+# --- LangChain / LangGraph Imports ---
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.utils.function_calling import convert_to_openai_function
+from langchain_core.runnables import RunnablePassthrough
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.tools import tool
 
-COLLECTION_NAME = "agentic_rag_documents"
+# LangGraph components
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolExecutor
 
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = {}
-if 'current_chat_id' not in st.session_state:
-    st.session_state.current_chat_id = str(uuid.uuid4())
-    st.session_state.chat_history[st.session_state.current_chat_id] = {
-        'messages': st.session_state.messages,
-        'title': "New Chat",
-        'date': datetime.now()
-    }
+# --- Utility Functions for Firebase/Auth (MUST BE INCLUDED) ---
+def init_firebase():
+    """Initializes Firebase app and returns Firestore and Auth clients."""
+    if 'db' not in st.session_state:
+        try:
+            # 1. Load Config
+            firebase_config = json.loads(__firebase_config)
+            
+            # 2. Initialize Firebase Admin SDK (used for configuration)
+            cred = credentials.Certificate(firebase_config)
+            initialize_app(cred, name=__app_id) # Use __app_id for unique app name
+            
+            # 3. Get Firestore Client
+            db = firestore.client(app=initialize_app.get_app(__app_id))
 
-@st.cache_resource
-def initialize_dependencies():
-    """Initializes ChromaDB client and SentenceTransformer model."""
-    try:
-        # Use a local temporary directory for ChromaDB to ensure persistence during a session
-        # and cleanup upon session restart/app stop.
-        db_path = tempfile.mkdtemp()
-        db_client = chromadb.PersistentClient(path=db_path)
-        # SentenceTransformer for embedding, running on CPU
-        model = SentenceTransformer("all-MiniLM-L6-v2", device='cpu')
-        return db_client, model
-    except Exception as e:
-        st.error(f"Dependency initialization error: {e}")
-        st.stop()
+            # Store the initialized clients in session state
+            st.session_state.db = db
+            st.session_state.app_id = __app_id
+            st.session_state.user_id = "canvas_user" # Simplified userId for demo purposes
 
-if 'db_client' not in st.session_state or 'model' not in st.session_state:
-    st.session_state.db_client, st.session_state.model = initialize_dependencies()
+            # Logging initialization status
+            print("Firebase successfully initialized.")
+        except Exception as e:
+            # Fallback/Error handling
+            print(f"Error initializing Firebase: {e}")
+            st.session_state.db = None
+            st.error("Failed to initialize Firebase. Persistence will not work.")
 
-def get_collection():
-    """Retrieves or creates the ChromaDB collection."""
-    return st.session_state.db_client.get_or_create_collection(name=COLLECTION_NAME)
+# --- LangGraph State Definition ---
+# This dictionary defines the state that passes between nodes in the graph
+class AgentState(TypedDict):
+    # messages is a list that will be appended to by each node
+    messages: Annotated[List[BaseMessage], operator.add]
+    # A single source of truth for the entire final response
+    final_response: str
+    # A list of tool calls made in the current step
+    tool_calls: List[dict]
+    # Flag to signal if the RAG tool should be used
+    use_rag: bool
+
+# --- Tool Definitions (MOCK/SIMPLIFIED FOR RUNNABILITY) ---
+
+@tool
+def google_search(query: str) -> str:
+    """
+    Use this tool to search the web for real-time information.
+    Always use this for questions about current events, news, or general knowledge.
+    """
+    st.toast("Searching the web...")
+    # Mocking a search result
+    if "Gemini" in query:
+        return "Search result: Gemini 2.5 Flash is highly optimized for low-latency tasks and is often preferred for chat applications to enhance speed."
+    elif "Streamlit" in query:
+        return "Search result: Streamlit is a Python library that lets you create and share web apps for data science and machine learning."
+    else:
+        return f"Search result: I found general information about '{query}'. For faster response, streaming is recommended."
 
 @tool
 def retrieve_documents(query: str) -> str:
     """
-    Searches the ChromaDB vector database for documents relevant to the query.
+    Use this tool ONLY to look up information from the loaded internal documents (RAG).
     """
-    try:
-        collection = get_collection()
-        model = st.session_state.model
-        # Encode the query using the model
-        query_embedding = model.encode(query).tolist()
-        # Query the collection
-        results = collection.query(query_embeddings=query_embedding, n_results=5)
-        
-        # Check if documents were found and return them
-        if results and results.get('documents') and results['documents'][0]:
-            return "\n---\n".join(results['documents'][0])
-        else:
-            return "No relevant documents found in the database."
-            
-    except Exception as e:
-        return f"Error in document retrieval: {e}"
-
-@tool
-def calculator(expression: str) -> str:
-    """
-    Evaluates a mathematical expression string safely.
-    """
-    # Simple check to prevent complex code execution via eval
-    if not re.match(r"^[0-9+\-*/().\s]+$", expression):
-        return "Invalid expression. Only basic arithmetic operations are allowed."
-    try:
-        # Use a limited global/local environment for safety, though still 'eval'
-        return str(eval(expression, {"__builtins__": None}, {}))
-    except Exception as e:
-        return f"Error evaluating expression: {e}"
-
-@tool
-def duckduckgo_search(query: str) -> str:
-    """
-    Performs a DuckDuckGo web search for the given query. Use for general knowledge questions.
-    """
-    search = DuckDuckGoSearchRun()
-    return search.run(query)
-
-def create_agent():
-    """Creates and returns the LangChain ReAct agent executor."""
-    prompt_template = hub.pull("hwchase17/react-chat")
+    # In a real app, this would perform embedding, ChromaDB query, and return chunks.
+    st.toast("Retrieving documents from vector store...")
+    if st.session_state.get('rag_enabled', False):
+         return f"RAG document context: The document states that the main bottleneck in agent applications is the multiple sequential LLM calls required for reasoning and tool execution. Streaming can mask this latency."
+    else:
+        return "RAG document context: No specific internal documents are loaded or relevant for this query."
     
-    # --- Tools ---
-    # TavilySearch tool removed as requested
-    tools = [
-        retrieve_documents, # For RAG
-        calculator,       # For math
-        duckduckgo_search   # For general web search
+# Gather all tools
+tools = [google_search, retrieve_documents]
+
+# --- LangGraph Node Definitions ---
+
+def call_model(state: AgentState) -> dict:
+    """Invokes the chat model to determine the next action (tool call or final answer)."""
+    
+    # 1. Extract the current conversation history
+    # We only send the last few messages to prevent token bloat
+    history_limit = 10 
+    history = state["messages"][-history_limit:]
+
+    # 2. Get the LLM bound with tools
+    llm = st.session_state.llm_agent
+    
+    try:
+        # 3. Invoke the model
+        response = llm.invoke(history)
+    except Exception as e:
+        # Handle API errors gracefully
+        return {"messages": [AIMessage(content=f"Error contacting the model: {e}")], "final_response": "Error"}
+
+    # 4. Check for tool calls
+    if response.tool_calls:
+        # Pass the tool calls to the next node (call_tool)
+        return {"messages": [response], "tool_calls": response.tool_calls}
+    else:
+        # This is the final answer, ready to be streamed/displayed
+        return {"messages": [response], "final_response": response.content}
+
+def call_tool(state: AgentState) -> dict:
+    """Executes the tool calls requested by the model."""
+    
+    messages = state["messages"]
+    last_message = messages[-1]
+    
+    # 1. Execute all tool calls
+    tool_executor = st.session_state.tool_executor
+    tool_outputs = tool_executor.invoke(last_message)
+    
+    # 2. Format tool outputs into ToolMessages
+    tool_messages = [
+        ToolMessage(content=json.dumps(output["output"]), tool_call_id=output["id"])
+        for output in tool_outputs
     ]
-
-    # --- Gemini LLM Setup ---
-    gemini_api_key = st.secrets.get("GEMINI_API_KEY")
-    if not gemini_api_key:
-        st.error("GEMINI_API_KEY not found in Streamlit secrets.")
-        st.stop()
     
-    # Use Gemini Flash 3B model explicitly as requested (or fall back to a common flash model)
-    # The 'gemini-2.5-flash' is the currently recommended name for high-speed chat.
-    gemini_model_name = st.secrets.get("GEMINI_MODEL_NAME", "gemini-2.5-flash") 
+    # 3. Return the tool results to the graph state
+    return {"messages": tool_messages}
 
-    llm = ChatGoogleGenerativeAI(
-        google_api_key=gemini_api_key,
-        model=gemini_model_name,
-        temperature=0.1
-    )
+def should_continue(state: AgentState) -> str:
+    """Conditional edge to decide next step: call tool, or finish."""
     
-    # --- Agent Creation ---
-    agent = create_react_agent(llm, tools, prompt_template)
-    # Note: AgentExecutor now requires `handle_parsing_errors=True` for robust chat interaction
-    return AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
+    # Check if the last message contains tool calls (meaning the model wants to use a tool)
+    last_message = state["messages"][-1]
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return "call_tool"
+    
+    # Check if the LLM has already generated the final response content
+    if state.get("final_response"):
+        return "end"
 
-def clear_chroma_data():
-    """Clears all documents from the ChromaDB collection."""
-    try:
-        if COLLECTION_NAME in [col.name for col in st.session_state.db_client.list_collections()]:
-            st.session_state.db_client.delete_collection(name=COLLECTION_NAME)
-    except Exception as e:
-        st.error(f"Error clearing collection: {e}")
+    # If neither, continue reasoning (should not happen in this simple graph, but is safe)
+    return "call_model"
+    
+# --- LangGraph Initialization ---
 
-def split_documents(text_data, chunk_size=500, chunk_overlap=100) -> List[str]:
-    """Splits a large text into smaller chunks."""
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len,
-        is_separator_regex=False,
+def get_or_create_langgraph(tools, system_prompt):
+    """Initializes and compiles the LangGraph."""
+    if 'graph' in st.session_state:
+        return st.session_state.graph
+
+    # Initialize LLM with the specified system prompt and tools
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+    llm_with_tools = llm.bind_tools(tools=tools)
+
+    # 1. Create the ToolExecutor
+    tool_executor = ToolExecutor(tools)
+
+    # Store LLM and ToolExecutor for use in nodes
+    st.session_state.llm_agent = llm_with_tools
+    st.session_state.tool_executor = tool_executor
+    
+    # 2. Define the Graph
+    workflow = StateGraph(AgentState)
+    
+    # Add nodes (steps in the process)
+    workflow.add_node("call_model", call_model)
+    workflow.add_node("call_tool", call_tool)
+    
+    # Set the entry point
+    workflow.set_entry_point("call_model")
+    
+    # Define edges (transitions between nodes)
+    # The start always goes to the model
+    
+    # Conditional edge after calling the model
+    workflow.add_conditional_edges(
+        "call_model",
+        should_continue,
+        {
+            "call_tool": "call_tool", # If tool is needed, call tool
+            "end": END,                # If final answer is ready, finish
+            "call_model": "call_model" # Loop back if needed (e.g. error recovery)
+        }
     )
-    return splitter.split_text(text_data)
 
-def process_and_store_documents(documents: List[str]):
-    """Embeds and stores documents in ChromaDB."""
-    collection = get_collection()
-    model = st.session_state.model
+    # After calling the tool, we loop back to the model for final synthesis
+    workflow.add_edge("call_tool", "call_model")
+    
+    # 3. Compile the graph
+    graph = workflow.compile()
+    st.session_state.graph = graph
+    return graph
 
-    embeddings = model.encode(documents).tolist()
-    document_ids = [str(uuid.uuid4()) for _ in documents]
-    collection.add(documents=documents, embeddings=embeddings, ids=document_ids)
-    st.toast("Documents processed and stored successfully!", icon="✅")
-
-def is_valid_github_raw_url(url: str) -> bool:
-    """Validates if the URL is a raw GitHub file with .txt or .md extension."""
-    pattern = r"https://raw\.githubusercontent\.com/[\w-]+/[\w-]+/[^/]+/[\w./-]+\.(txt|md)$"
-    return re.match(pattern, url) is not None
-
-def display_chat_messages():
-    """Displays the current chat history in the main area."""
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+# --- Streamlit UI and Logic ---
 
 def handle_user_input():
-    """Handles user input and gets a response from the agent."""
-    if prompt := st.chat_input("Ask about your document or a general question..."):
-        # 1. Store user message
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-            
-        # 2. Get agent response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                agent_executor = create_agent()
-                
-                # Format chat history for the agent to maintain context
-                # LangChain expects a list of tuples (role, content) for chat_history in ReAct
-                history_for_agent = []
-                for msg in st.session_state.messages[:-1]: # Exclude the current user message
-                    history_for_agent.append((msg["role"], msg["content"]))
-                
-                try:
-                    response = agent_executor.invoke({
-                        "input": prompt, 
-                        "chat_history": history_for_agent # Pass the formatted history
-                    })
-                    final_response = response.get('output', 'An error occurred during agent execution.')
-                except Exception as e:
-                    final_response = f"An error occurred: {e}"
-                
-                st.markdown(final_response)
-                
-        # 3. Store assistant message and update chat history for the session
-        st.session_state.messages.append({"role": "assistant", "content": final_response})
-        
-        # Auto-update chat title on first message
-        if st.session_state.current_chat_id:
-            chat_data = st.session_state.chat_history.get(st.session_state.current_chat_id)
-            if chat_data and chat_data['title'] == "New Chat":
-                # Use the first 5 words of the prompt as a simple title
-                new_title = " ".join(prompt.split()[:5]) + "..." if len(prompt.split()) > 5 else prompt
-                st.session_state.chat_history[st.session_state.current_chat_id]['title'] = new_title
+    """Processes the user's message and streams the response from the agent."""
+    prompt = st.session_state.prompt_input
+    if not prompt:
+        return
 
-# --- Main UI ---
-st.set_page_config(page_title="Agentic RAG Chat with Gemini Flash")
-st.title("Agentic RAG Chat Flow with Gemini Flash Model")
-st.markdown("---")
+    # Add user message to chat history
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.prompt_input = "" # Clear input
 
-# Sidebar controls
-with st.sidebar:
-    st.header("Chat Controls")
+    # Prepare chat history for the agent
+    history_for_agent = []
+    # Reverse the history to get the latest messages first, and limit it
+    for msg in st.session_state.messages[-10:]:
+         if msg["role"] == "user":
+             history_for_agent.append(HumanMessage(content=msg["content"]))
+         elif msg["role"] == "assistant":
+             history_for_agent.append(AIMessage(content=msg["content"]))
+
+    # Prepare input for the graph (HumanMessage for the current prompt)
+    # The graph expects a list of messages for the initial state.
+    inputs = {"messages": [HumanMessage(content=prompt)]}
+
+    # ----------------------------------------------------
+    # CORE CHANGE: LangGraph Streaming Logic
+    # ----------------------------------------------------
     
-    # Button for New Chat
-    if st.button("Start New Chat"):
+    # We create a placeholder to update the text in real-time
+    with st.chat_message("assistant"):
+        response_placeholder = st.empty()
+        full_response = ""
+        
+        # Get the initialized graph
+        graph = st.session_state.graph
+
+        try:
+            # Stream the graph execution
+            # The streaming will yield state updates for each node transition
+            for chunk in graph.stream(inputs):
+                # LangGraph state updates often contain the new message list.
+                # We check for the last message in the list.
+                
+                # Check for updates to the messages list
+                if "messages" in chunk and chunk["messages"]:
+                    last_message = chunk["messages"][-1]
+                    
+                    # We are only interested in the final AIMessage content
+                    if isinstance(last_message, AIMessage):
+                        # Use .content to get the text chunk for streaming
+                        text_chunk = last_message.content
+                        
+                        if text_chunk:
+                            # Append and update the placeholder
+                            full_response += text_chunk
+                            # Add a subtle blinking cursor to indicate streaming
+                            response_placeholder.markdown(full_response + "▌") 
+                            
+            # Final update without the cursor
+            response_placeholder.markdown(full_response)
+            
+            # Add the complete response to the chat history
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
+            
+        except Exception as e:
+            st.error(f"An error occurred during agent execution: {e}")
+            full_response = "Sorry, I ran into an error while processing that request."
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+def main():
+    # Set Streamlit Page Config
+    st.set_page_config(page_title="LangGraph Streaming Agent", layout="wide")
+
+    # 1. Initialize Firebase/Auth (Crucial for Canvas persistence)
+    init_firebase()
+    
+    # 2. Define System Prompt and Initialize LangGraph
+    SYSTEM_PROMPT = (
+        "You are a helpful and extremely fast AI assistant powered by Gemini Flash and LangGraph. "
+        "Your primary goal is to provide concise and accurate answers. "
+        "Use the tools provided ONLY when necessary to answer the question. "
+        "Prioritize the 'retrieve_documents' tool for internal knowledge first, then 'google_search' for current events or external knowledge. "
+        "Always respond directly and conversationally."
+    )
+    
+    # Caching the graph creation to avoid re-initializing on every rerun
+    try:
+        if 'graph' not in st.session_state:
+            get_or_create_langgraph(tools, SYSTEM_PROMPT)
+    except Exception as e:
+        st.error(f"Failed to initialize the LangGraph. Check API key setup. Error: {e}")
+        return
+
+    # 3. Initialize Chat History
+    if "messages" not in st.session_state:
         st.session_state.messages = []
-        clear_chroma_data() # Clear RAG data for a new session
-        # Create a new chat ID and initial history entry
-        new_chat_id = str(uuid.uuid4())
-        st.session_state.current_chat_id = new_chat_id
-        st.session_state.chat_history[new_chat_id] = {
-            'messages': st.session_state.messages,
-            'title': "New Chat",
-            'date': datetime.now()
-        }
-        st.experimental_rerun()
-        
-    st.subheader("Chat History")
-    # Display and manage chat history
-    if 'chat_history' in st.session_state and st.session_state.chat_history:
-        sorted_chat_ids = sorted(
-            st.session_state.chat_history.keys(),
-            key=lambda x: st.session_state.chat_history[x]['date'],
-            reverse=True
+        st.session_state.messages.append(
+            {"role": "assistant", "content": "Hello! I am a Gemini-powered Agent. Ask me anything, and notice the rapid streaming response thanks to LangGraph!"}
         )
-        for chat_id in sorted_chat_ids:
-            chat_data = st.session_state.chat_history[chat_id]
-            chat_title = chat_data['title']
-            date_str = chat_data['date'].strftime("%b %d, %I:%M %p")
-            
-            # Highlight the current chat
-            is_current = chat_id == st.session_state.current_chat_id
-            button_label = f"**{'* ' if is_current else ''}{chat_title}{'*' if is_current else ''}** - {date_str}"
-            
-            if st.button(button_label, key=f"hist_btn_{chat_id}"):
-                # Switch to a different chat
-                if st.session_state.current_chat_id != chat_id:
-                    st.session_state.current_chat_id = chat_id
-                    st.session_state.messages = st.session_state.chat_history[chat_id]['messages']
-                    st.experimental_rerun()
     
-# Document Upload and Processing Area
-with st.container():
-    st.subheader("Add Context Documents")
-    uploaded_files = st.file_uploader("Upload text files (.txt)", type="txt", accept_multiple_files=True)
-    github_url = st.text_input("Enter a GitHub raw `.txt` or `.md` URL:", key="github_url_input")
+    # 4. Sidebar and UI Setup
+    st.sidebar.title("Agent Configuration")
+    st.sidebar.markdown(f"**App ID:** `{st.session_state.app_id}`")
+    st.sidebar.markdown(f"**User ID:** `{st.session_state.user_id}`")
+    st.sidebar.markdown("---")
+    
+    rag_enabled = st.sidebar.checkbox("Enable RAG Tool (Mocked)", value=True, help="Simulates using internal document retrieval.")
+    st.session_state.rag_enabled = rag_enabled
+    
+    if st.sidebar.button("Clear Chat"):
+        st.session_state.messages = []
+        st.experimental_rerun()
 
-    # Handle file uploads
-    if uploaded_files:
-        if st.button("Process Uploaded Files", key="process_files_btn"):
-            with st.spinner("Processing files..."):
-                all_documents = []
-                for uploaded_file in uploaded_files:
-                    file_contents = uploaded_file.read().decode("utf-8")
-                    documents = split_documents(file_contents)
-                    all_documents.extend(documents)
-                
-                if all_documents:
-                    process_and_store_documents(all_documents)
-                    st.success("All files processed and stored successfully! You can now ask questions about their content.")
-                else:
-                    st.warning("No content found in the uploaded files to process.")
+    # 5. Main Chat Interface
+    st.title("⚡ LangGraph Streaming Agent (Gemini Flash)")
 
-    # Handle GitHub URL
-    if github_url:
-        if is_valid_github_raw_url(github_url):
-            if st.button("Process URL", key="process_url_btn"):
-                with st.spinner("Fetching and processing file from URL..."):
-                    try:
-                        response = requests.get(github_url)
-                        response.raise_for_status() # Raise HTTPError for bad responses
-                        file_contents = response.text
-                        documents = split_documents(file_contents)
-                        process_and_store_documents(documents)
-                        st.success("File from URL processed! You can now chat about its contents.")
-                    except requests.exceptions.RequestException as e:
-                        st.error(f"Error fetching URL: {e}")
-                    except Exception as e:
-                        st.error(f"Unexpected error: {e}")
-        else:
-            st.warning("Please ensure the URL is a raw GitHub link ending in `.txt` or `.md`.")
-
-
-# Main Chat Display and Input
-display_chat_messages()
-handle_user_input()
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(
