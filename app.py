@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from typing import List
 
+import google.generativeai as genai
 from langchain_tavily import TavilySearch
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -98,7 +99,9 @@ def create_agent():
     if not gemini_api_key:
         st.error("GEMINI_API_KEY not found in secrets.")
         st.stop()
-    gemini_model_name = st.secrets.get("GEMINI_MODEL_NAME", "gemini-pro")
+    
+    # Using Gemini Flash 3B model explicitly
+    gemini_model_name = st.secrets.get("GEMINI_MODEL_NAME", "gemini-flash-3b")
 
     llm = ChatGoogleGenerativeAI(
         google_api_key=gemini_api_key,
@@ -158,11 +161,11 @@ def handle_user_input():
         st.session_state.messages.append({"role": "assistant", "content": final_response})
 
 # --- Main UI ---
-st.set_page_config(page_title="Agentic RAG Chat with Gemini")
-st.title("Agentic RAG Chat Flow with Gemini")
+st.set_page_config(page_title="Agentic RAG Chat with Gemini Flash")
+st.title("Agentic RAG Chat Flow with Gemini Flash Model")
 st.markdown("---")
 
-# Sidebar controls only (NO API key credential hints, clean UI)
+# Sidebar controls only (no keys shown)
 with st.sidebar:
     st.header("Chat Controls")
     if st.button("New Chat"):
