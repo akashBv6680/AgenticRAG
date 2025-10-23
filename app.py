@@ -17,17 +17,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # LangChain/Google GenAI imports
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, ToolMessage
-
-# --- FIX 1: CORRECTED IMPORT PATH FOR ToolException ---
 from langchain_core.tools import ToolException 
-# ----------------------------------------------------
 
 from langchain_community.tools import DuckDuckGoSearchRun
-
-# --- FIX 3: CORRECTED IMPORT NAME FOR GOOGLE CHAT MODEL ---
-from langchain_google_genai import ChatGoogleGenerativeAI # <- FIXED: Added 'tive'
-# ----------------------------------------------------------
-
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.document_loaders import TextLoader, WebBaseLoader
 
 # LangGraph imports
@@ -35,7 +28,6 @@ from langgraph.graph import StateGraph, END
 
 COLLECTION_NAME = "agentic_rag_documents"
 
-# --- FIX 2: CORRECTED st.session_state REFERENCES ---
 # --- State Initialization ---
 if 'messages' not in st.session_state:
     st.session_state.messages = []
@@ -55,6 +47,10 @@ if st.session_state.current_chat_id not in st.session_state.chat_history:
         'title': "New Chat",
         'date': datetime.now()
     }
+# New state for debug toggle
+if 'show_debug_log' not in st.session_state:
+    st.session_state.show_debug_log = False
+
 
 @st.cache_resource
 def initialize_dependencies():
@@ -97,7 +93,6 @@ def retrieve_documents(query: str) -> str:
             
     except Exception as e:
         st.warning(f"RAG Tool Error: {e}") 
-        # Raise ToolException so the graph can correctly handle the error and inform the LLM
         raise ToolException(f"Error in document retrieval: {e}. Cannot use RAG context.")
 
 @tool
@@ -110,7 +105,6 @@ def duckduckgo_search(query: str) -> str:
         return search.run(query)
     except Exception as e:
         st.warning(f"Web Search Tool Error: {e}")
-        # Raise ToolException so the graph can correctly handle the error and inform the LLM
         raise ToolException(f"Error in web search: {e}. Cannot use Web context.")
 
 # --- LangGraph Setup ---
@@ -153,17 +147,14 @@ def call_model_to_decide(state: GraphState):
         "Prioritize the RAG tool if the question is about the uploaded content."
     )
     
-    # Pass the full message history, prepended by the system prompt
     response = llm.invoke([HumanMessage(content=system_prompt)] + state["messages"])
     
     if response.tool_calls:
         tool_call = response.tool_calls[0]
         tool_name = tool_call["name"]
         
-        # Add the model's tool call message to the history
         return {"messages": [response], "next_tool": tool_name}
     else:
-        # Add the model's final response message to the history
         return {"messages": [response], "next_tool": "Final Answer"}
 
 def call_rag_tool(state: GraphState):
@@ -185,7 +176,6 @@ def call_rag_tool(state: GraphState):
             tool_call_id=tool_call_id
         )
     except ToolException as e:
-        # Catch the exception raised by the tool and create a ToolMessage with the error
         tool_message = ToolMessage(
             content=f"Tool Execution Error: {str(e)}", 
             tool_call_id=tool_call_id
@@ -213,7 +203,6 @@ def call_web_tool(state: GraphState):
             tool_call_id=tool_call_id
         )
     except ToolException as e:
-        # Catch the exception raised by the tool and create a ToolMessage with the error
         tool_message = ToolMessage(
             content=f"Tool Execution Error: {str(e)}", 
             tool_call_id=tool_call_id
@@ -376,23 +365,28 @@ def handle_user_input():
             response_placeholder = st.empty()
             full_response = ""
             
-            # --- START DIAGNOSTIC SECTION ---
-            st.info("Agent Debug Log (Tracking LangGraph Flow):")
-            current_log = st.empty()
-            log_messages = []
+            # --- CONDITIONALLY DISPLAY DEBUG LOG ---
+            if st.session_state.show_debug_log:
+                st.info("Agent Debug Log (Tracking LangGraph Flow):")
+                current_log = st.empty()
+                log_messages = []
+            else:
+                current_log = None # Placeholder to prevent errors if not displayed
+            # -------------------------------------
             
             try:
                 for i, s in enumerate(graph_app.stream(initial_state)):
-                    # Get the node that just executed
                     node_name = list(s.keys())[0]
                     node_output = s[node_name]
                     
-                    log_messages.append(f"Step {i+1}: Node **{node_name}** executed.")
+                    if st.session_state.show_debug_log and current_log:
+                        log_messages.append(f"Step {i+1}: Node **{node_name}** executed.")
                     
                     if node_name == "decide_tool":
                         decision = node_output.get('next_tool', 'Unknown')
-                        log_messages.append(f"   -> Decision: **{decision}**")
-                        current_log.markdown("\n".join(log_messages))
+                        if st.session_state.show_debug_log and current_log:
+                            log_messages.append(f"   -> Decision: **{decision}**")
+                            current_log.markdown("\n".join(log_messages))
                         
                         if decision == "Final Answer":
                             final_message = node_output["messages"][-1]
@@ -402,13 +396,15 @@ def handle_user_input():
                         
                     elif node_name == "call_rag":
                         rag_result = node_output.get('rag_context', 'N/A')
-                        log_messages.append(f"   -> RAG Context Status: {'SUCCESS' if not rag_result.startswith('Error') else 'FAILURE'}")
-                        current_log.markdown("\n".join(log_messages))
+                        if st.session_state.show_debug_log and current_log:
+                            log_messages.append(f"   -> RAG Context Status: {'SUCCESS' if not rag_result.startswith('Error') else 'FAILURE'}")
+                            current_log.markdown("\n".join(log_messages))
                         
                     elif node_name == "call_web":
                         web_result = node_output.get('web_context', 'N/A')
-                        log_messages.append(f"   -> Web Context Status: {'SUCCESS' if not web_result.startswith('Error') else 'FAILURE'}")
-                        current_log.markdown("\n".join(log_messages))
+                        if st.session_state.show_debug_log and current_log:
+                            log_messages.append(f"   -> Web Context Status: {'SUCCESS' if not web_result.startswith('Error') else 'FAILURE'}")
+                            current_log.markdown("\n".join(log_messages))
 
                     elif node_name == "generate_response":
                         latest_message_chunk = node_output.get("messages", [])[-1]
@@ -420,10 +416,11 @@ def handle_user_input():
                 response_placeholder.markdown(full_response) 
 
             except Exception as e:
-                full_response = f"An **CRITICAL** error occurred in the agent execution: `{e}`. Check the debug log above for the last successful step."
+                full_response = f"An **CRITICAL** error occurred in the agent execution: `{e}`. Check the debug log above for the last successful step (if enabled)."
                 response_placeholder.markdown(full_response)
-                log_messages.append(f"**Execution Failed with Error:** `{e}`")
-                current_log.markdown("\n".join(log_messages))
+                if st.session_state.show_debug_log and current_log:
+                    log_messages.append(f"**Execution Failed with Error:** `{e}`")
+                    current_log.markdown("\n".join(log_messages))
                 
         # 4. Store assistant message and update chat history
         st.session_state.messages.append({"role": "assistant", "content": full_response})
@@ -496,6 +493,12 @@ with st.sidebar:
         }
         st.experimental_rerun()
         
+    # --- DEBUG TOGGLE ADDED HERE ---
+    st.subheader("Agent Debug Settings")
+    st.checkbox("Show LangGraph Execution Log", key='show_debug_log')
+    st.markdown("---")
+    # -------------------------------
+    
     st.subheader("3. Chat History")
     
     if 'chat_history' in st.session_state and st.session_state.chat_history:
