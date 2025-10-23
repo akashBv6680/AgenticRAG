@@ -7,9 +7,8 @@ import re
 from datetime import datetime
 from typing import List
 
-from tavily import TavilyClient
+import google.generativeai as genai
 from langchain_tavily import TavilySearch
-
 import chromadb
 from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -17,8 +16,6 @@ from langchain.agents import create_react_agent, AgentExecutor
 from langchain_core.tools import tool
 from langchain import hub
 from langchain_community.tools import DuckDuckGoSearchRun
-
-from langchain_huggingface import HuggingFaceEndpoint
 
 COLLECTION_NAME = "agentic_rag_documents"
 
@@ -55,12 +52,6 @@ def get_collection():
 def retrieve_documents(query: str) -> str:
     """
     Searches the ChromaDB vector database for documents relevant to the query.
-    
-    Args:
-        query (str): The search question or keywords.
-        
-    Returns:
-        str: Concatenated matching documents or an error message.
     """
     try:
         collection = get_collection()
@@ -75,12 +66,6 @@ def retrieve_documents(query: str) -> str:
 def calculator(expression: str) -> str:
     """
     Evaluates a mathematical expression string safely.
-    
-    Args:
-        expression (str): A mathematical expression (e.g., "2 + 2 * 3").
-        
-    Returns:
-        str: The calculation result or error message.
     """
     try:
         return str(eval(expression))
@@ -91,26 +76,17 @@ def calculator(expression: str) -> str:
 def duckduckgo_search(query: str) -> str:
     """
     Performs a DuckDuckGo web search for the given query.
-    
-    Args:
-        query (str): Query string to search for.
-        
-    Returns:
-        str: Search results as a string.
     """
     search = DuckDuckGoSearchRun()
     return search.run(query)
 
 def create_agent():
     prompt_template = hub.pull("hwchase17/react-chat")
-
     tavily_api_key = st.secrets.get("TAVILY_API_KEY")
     if not tavily_api_key:
         st.error("TAVILY_API_KEY not found in secrets.")
         st.stop()
-
     tavily_search_tool = TavilySearch(max_results=5)
-
     tools = [
         retrieve_documents,
         calculator,
@@ -118,29 +94,22 @@ def create_agent():
         tavily_search_tool
     ]
 
-    together_api_key = st.secrets.get("TOGETHER_API_KEY")
-    if together_api_key:
-        from langchain_community.llms import Together
-        llm = Together(
-            together_api_key=together_api_key,
-            model="mistralai/Mistral-7B-Instruct-v0.2"
-        )
-    else:
-        hf_token = st.secrets.get("HUGGINGFACEHUB_API_TOKEN")
-        if not hf_token:
-            st.error("HUGGINGFACEHUB_API_TOKEN not found in secrets.")
-            st.stop()
+    # Gemini Integration
+    gemini_api_key = st.secrets.get("GEMINI_API_KEY")
+    if not gemini_api_key:
+        st.error("GEMINI_API_KEY not found in secrets.")
+        st.stop()
+    genai.configure(api_key=gemini_api_key)
+    model_name = st.secrets.get("GEMINI_MODEL_NAME", "gemini-pro")
+    model = genai.GenerativeModel(model_name)
 
-        # Model selection widget in sidebar or default to flan-t5-base
-        hf_model_id = st.sidebar.text_input("Hugging Face model id", value="google/flan-t5-base")
+    class GeminiLLM:
+        # Minimal wrapper to act like LangChain LLM
+        def __call__(self, prompt, **kwargs):
+            response = model.generate_content(prompt)
+            return response.text
 
-        endpoint_url = f"https://router.huggingface.co/hf-inference/{hf_model_id}"
-
-        llm = HuggingFaceEndpoint(
-            endpoint_url=endpoint_url,
-            huggingfacehub_api_token=hf_token
-        )
-
+    llm = GeminiLLM()
     agent = create_react_agent(llm, tools, prompt_template)
     return AgentExecutor(agent=agent, tools=tools, verbose=True)
 
@@ -166,7 +135,6 @@ def process_and_store_documents(documents: List[str]):
 
     embeddings = model.encode(documents).tolist()
     document_ids = [str(uuid.uuid4()) for _ in documents]
-
     collection.add(documents=documents, embeddings=embeddings, ids=document_ids)
     st.toast("Documents processed and stored successfully!", icon="✅")
 
@@ -182,10 +150,8 @@ def display_chat_messages():
 def handle_user_input():
     if prompt := st.chat_input("Ask about your document..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-
         with st.chat_message("user"):
             st.markdown(prompt)
-
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 agent_executor = create_agent()
@@ -195,36 +161,22 @@ def handle_user_input():
                 except Exception as e:
                     final_response = f"An error occurred: {e}"
                 st.markdown(final_response)
-
         st.session_state.messages.append({"role": "assistant", "content": final_response})
 
 # --- Main UI ---
-st.title("Agentic RAG Chat Flow with Tavily")
+st.set_page_config(page_title="Agentic RAG Chat with Gemini")
+st.title("Agentic RAG Chat Flow with Gemini")
 st.markdown("---")
 
-# Sidebar
+# Sidebar (NO API key credential hints, clean UI)
 with st.sidebar:
-    st.header("API Key Configuration")
-    st.markdown(
-        """
-        Upload your API keys in Streamlit Cloud Secrets:
-        
-        - `TAVILY_API_KEY` for Tavily AI
-        - `TOGETHER_API_KEY` for Together AI (optional)
-        - `HUGGINGFACEHUB_API_TOKEN` for HuggingFaceHub LLM fallback
-        """
-    )
-    # Model id input for HF endpoint
-    st.text_input("Hugging Face model id", value="google/flan-t5-base", key="huggingface_model_id")
-
-    st.header("Agentic RAG Chat Flow")
+    st.header("Chat Controls")
     if st.button("New Chat"):
         st.session_state.messages = []
         clear_chroma_data()
         st.session_state.chat_history = {}
         st.session_state.current_chat_id = None
         st.experimental_rerun()
-
     st.subheader("Chat History")
     if 'chat_history' in st.session_state and st.session_state.chat_history:
         sorted_chat_ids = sorted(
@@ -239,6 +191,35 @@ with st.sidebar:
                 st.session_state.current_chat_id = chat_id
                 st.session_state.messages = st.session_state.chat_history[chat_id]['messages']
                 st.experimental_rerun()
+
+with st.container():
+    st.subheader("Add Context Documents")
+    uploaded_files = st.file_uploader("Upload text files (.txt)", type="txt", accept_multiple_files=True)
+    github_url = st.text_input("Enter a GitHub raw `.txt` or `.md` URL:")
+
+    if uploaded_files:
+        if st.button("Process Files"):
+            with st.spinner("Processing files..."):
+                for uploaded_file in uploaded_files:
+                    file_contents = uploaded_file.read().decode("utf-8")
+                    documents = split_documents(file_contents)
+                    process_and_store_documents(documents)
+                st.success("All files processed and stored successfully! You can now ask questions about their content.")
+
+    if github_url and is_valid_github_raw_url(github_url):
+        if st.button("Process URL"):
+            with st.spinner("Fetching and processing file from URL..."):
+                try:
+                    response = requests.get(github_url)
+                    response.raise_for_status()
+                    file_contents = response.text
+                    documents = split_documents(file_contents)
+                    process_and_store_documents(documents)
+                    st.success("File from URL processed! You can now chat about its contents.")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Error fetching URL: {e}")
+                except Exception as e:
+                    st.error(f"Unexpected error: {e}")
 
 display_chat_messages()
 handle_user_input()
