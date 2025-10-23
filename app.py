@@ -7,7 +7,6 @@ import re
 from datetime import datetime
 from typing import List
 
-import google.generativeai as genai
 from langchain_tavily import TavilySearch
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -16,6 +15,7 @@ from langchain.agents import create_react_agent, AgentExecutor
 from langchain_core.tools import tool
 from langchain import hub
 from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 COLLECTION_NAME = "agentic_rag_documents"
 
@@ -94,22 +94,16 @@ def create_agent():
         tavily_search_tool
     ]
 
-    # Gemini Integration
     gemini_api_key = st.secrets.get("GEMINI_API_KEY")
     if not gemini_api_key:
         st.error("GEMINI_API_KEY not found in secrets.")
         st.stop()
-    genai.configure(api_key=gemini_api_key)
-    model_name = st.secrets.get("GEMINI_MODEL_NAME", "gemini-pro")
-    model = genai.GenerativeModel(model_name)
+    gemini_model_name = st.secrets.get("GEMINI_MODEL_NAME", "gemini-pro")
 
-    class GeminiLLM:
-        # Minimal wrapper to act like LangChain LLM
-        def __call__(self, prompt, **kwargs):
-            response = model.generate_content(prompt)
-            return response.text
-
-    llm = GeminiLLM()
+    llm = ChatGoogleGenerativeAI(
+        google_api_key=gemini_api_key,
+        model=gemini_model_name
+    )
     agent = create_react_agent(llm, tools, prompt_template)
     return AgentExecutor(agent=agent, tools=tools, verbose=True)
 
@@ -168,7 +162,7 @@ st.set_page_config(page_title="Agentic RAG Chat with Gemini")
 st.title("Agentic RAG Chat Flow with Gemini")
 st.markdown("---")
 
-# Sidebar (NO API key credential hints, clean UI)
+# Sidebar controls only (NO API key credential hints, clean UI)
 with st.sidebar:
     st.header("Chat Controls")
     if st.button("New Chat"):
