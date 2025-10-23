@@ -1,5 +1,5 @@
-streamlit==1.36.0
-pysqlite3-binary
+streamlit>=1.24
+google-generativeai
 chromadb==0.4.24
 sentence-transformers==2.7.0
 numpy==1.26.4
@@ -12,7 +12,4 @@ langchain
 langchain-core
 langchain-community
 langchain-tavily
-tavily-python
-rich>=10.14.0,<14
-duckduckgo-search==8.1.1
-langchain-huggingface
+duckduckgo-search
